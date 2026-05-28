@@ -4,7 +4,7 @@ const obsidian = require('obsidian');
    SETTINGS — with schema versioning
    ═══════════════════════════════════════════════════════════ */
 
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 
 const DEFAULT_SETTINGS = {
     _version: SETTINGS_VERSION,
@@ -12,7 +12,7 @@ const DEFAULT_SETTINGS = {
     requiredFields: ["title", "description", "status", "era"],
     validateDraft: true,
     validateDate: true,
-    autoSyncGraph: true,
+    autoSyncGraph: false, // DISABLED by default — was causing infinite loops
     showRibbonIcon: true,
     cardsPerPage: 40,
 };
@@ -27,6 +27,10 @@ function migrateSettings(loaded) {
             loaded.requiredFields = loaded.requiredFields.split(",").map(s => s.trim()).filter(s => s);
         }
         if (loaded.cardsPerPage === undefined) loaded.cardsPerPage = 40;
+    }
+    if (version < 3) {
+        // v3: graph sync disabled by default due to cache.links mutation causing freezes
+        // If user had it enabled, keep it — but they've been warned
     }
     loaded._version = SETTINGS_VERSION;
     return loaded;
@@ -76,17 +80,21 @@ class AstroCMSValidator {
     }
 
     static getStatusForFile(file, app, settings) {
-        const cache = app.metadataCache.getFileCache(file);
-        const fm = cache?.frontmatter;
-        const errors = this.validate(fm, settings);
-        if (errors.length === 0) return { status: "ready", label: "Ready", errors: [] };
-        if (errors.some(e => e.severity === "error")) return { status: "error", label: "Errors", errors };
-        return { status: "warning", label: "Warnings", errors };
+        try {
+            const cache = app.metadataCache.getFileCache(file);
+            const fm = cache?.frontmatter;
+            const errors = this.validate(fm, settings);
+            if (errors.length === 0) return { status: "ready", label: "Ready", errors: [] };
+            if (errors.some(e => e.severity === "error")) return { status: "error", label: "Errors", errors };
+            return { status: "warning", label: "Warnings", errors };
+        } catch (e) {
+            return { status: "error", label: "Error", errors: [{ field: "Validation", message: "Failed to validate file.", severity: "error" }] };
+        }
     }
 }
 
 /* ═══════════════════════════════════════════════════════════
-   CONTENT CACHE — incremental, never re-scans everything
+   CONTENT CACHE — incremental, with safe async scanning
    ═══════════════════════════════════════════════════════════ */
 
 class ContentCache {
@@ -186,12 +194,13 @@ class ContentCache {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   DASHBOARD VIEW — debounced dirty-path batching
-   ═══════════════════════════════════════════════════════════
-   Architecture:
-   - Events ONLY update cache + mark paths dirty (no DOM work)
-   - DOM updates are batched via _scheduleFlush (300ms debounce)
-   - _ready gate: no DOM work until initial render completes
+   DASHBOARD VIEW — freeze-proof architecture
+   
+   Key safety principles:
+   1. NEVER process metadataCache.on("changed") during startup flood
+   2. ALL cache updates are debounced (not just DOM)
+   3. Initial scan only after workspace.layoutReady
+   4. No direct mutation of Obsidian internals
    ═══════════════════════════════════════════════════════════ */
 
 const VIEW_TYPE_DASHBOARD = "astro-cms-dashboard";
@@ -203,16 +212,17 @@ class AstroCMSDashboardView extends obsidian.ItemView {
         this.currentFilter = "all";
         this.searchQuery = "";
         this._visibleLimit = plugin.settings.cardsPerPage || 40;
-        this._cardElements = new Map(); // path → HTMLElement
+        this._cardElements = new Map();
         this._gridEl = null;
         this._statsEl = null;
         this._loadMoreEl = null;
         this._totalVisible = 0;
 
-        // ─── Performance gates ───
-        this._ready = false;           // true after initial renderDashboard()
-        this._dirtyPaths = new Set();  // paths that changed since last flush
-        this._flushTimer = null;       // debounce timer for batch DOM updates
+        // ─── Safety gates ───
+        this._destroyed = false;
+        this._ready = false;
+        this._pendingPaths = new Set();   // paths that need cache update
+        this._updateTimer = null;         // debounce timer for cache + DOM updates
     }
 
     getViewType() { return VIEW_TYPE_DASHBOARD; }
@@ -220,116 +230,153 @@ class AstroCMSDashboardView extends obsidian.ItemView {
     getIcon() { return "layout-dashboard"; }
 
     async onOpen() {
-        // ─── EVENT ROUTING: cache-only updates, schedule DOM flush ───
+        this._destroyed = false;
+
+        // ─── EVENT ROUTING: all debounced, gated on layoutReady ───
 
         this.registerEvent(this.app.metadataCache.on("changed", (file) => {
+            // CRITICAL: Skip ALL events during Obsidian's startup metadata flood
+            if (!this.app.workspace.layoutReady) return;
+            if (this._destroyed) return;
             if (!file.path.startsWith(this.plugin.settings.contentPath)) return;
-            this.plugin.cache.updateFile(file, this.app, this.plugin.settings);
-            this._markDirty(file.path);
+            this._queuePath(file.path);
         }));
 
         this.registerEvent(this.app.vault.on("create", (file) => {
+            if (!this.app.workspace.layoutReady) return;
+            if (this._destroyed) return;
             if (!file.path.startsWith(this.plugin.settings.contentPath) || file.extension !== "md") return;
             // Delay: new file may not have metadata yet
             setTimeout(() => {
-                this.plugin.cache.updateFile(file, this.app, this.plugin.settings);
-                this._markDirty(file.path);
-            }, 200);
+                if (!this._destroyed) this._queuePath(file.path);
+            }, 500);
         }));
 
         this.registerEvent(this.app.vault.on("delete", (file) => {
+            if (!this.app.workspace.layoutReady) return;
+            if (this._destroyed) return;
             if (!file.path.startsWith(this.plugin.settings.contentPath)) return;
+            // For deleted files, remove from cache immediately (no metadata to read)
             this.plugin.cache.removeFile(file.path);
-            this._markDirty(file.path);
+            this._queuePath(file.path);
         }));
 
         this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+            if (!this.app.workspace.layoutReady) return;
+            if (this._destroyed) return;
             if (oldPath.startsWith(this.plugin.settings.contentPath)) {
                 this.plugin.cache.removeFile(oldPath);
-                this._markDirty(oldPath);
+                this._queuePath(oldPath);
             }
             if (file.path.startsWith(this.plugin.settings.contentPath) && file.extension === "md") {
                 setTimeout(() => {
-                    this.plugin.cache.updateFile(file, this.app, this.plugin.settings);
-                    this._markDirty(file.path);
-                }, 200);
+                    if (!this._destroyed) this._queuePath(file.path);
+                }, 500);
             }
         }));
 
-        // ─── Initial scan + render ───
+        // ─── Initial scan — only after layout is ready ───
+        if (this.app.workspace.layoutReady) {
+            this._doInitialScan();
+        } else {
+            const ref = this.app.workspace.on("layout-ready", () => {
+                this.app.workspace.offref(ref);
+                this._doInitialScan();
+            });
+            this.registerEvent(ref);
+            // Show loading state immediately
+            this._showLoading();
+        }
+    }
+
+    _showLoading() {
+        try {
+            const container = this._getContainer();
+            if (!container) return;
+            container.empty();
+            container.addClass("astro-cms-dashboard");
+            container.createEl("div", { cls: "cms-loading-state" }).innerHTML =
+                '<div class="cms-empty-title">Loading Astro Content...</div>' +
+                '<div class="cms-empty-desc">Scanning your content folder. This may take a moment for large vaults.</div>';
+        } catch (e) { /* ignore */ }
+    }
+
+    _doInitialScan() {
+        if (this._destroyed) return;
         try {
             this.plugin.cache.scanAll(this.app, this.plugin.settings);
         } catch (e) {
             console.error("Astro CMS: initial scan failed", e);
         }
-
-        // Delay to ensure DOM container is ready
-        setTimeout(() => {
-            this.renderDashboard();
-            this._ready = true;
-        }, 100);
+        this.renderDashboard();
+        this._ready = true;
     }
 
-    /* ─── DIRTY-PATH BATCHING ─── */
+    /* ─── DEBOUNCED UPDATE QUEUE ─── */
+    // Instead of updating cache immediately on every event,
+    // we queue paths and process them in a debounced batch.
 
-    _markDirty(path) {
-        this._dirtyPaths.add(path);
-        this._scheduleFlush();
+    _queuePath(path) {
+        this._pendingPaths.add(path);
+        this._scheduleUpdate();
     }
 
-    _scheduleFlush() {
-        // Don't flush until initial render is done
+    _scheduleUpdate() {
         if (!this._ready) return;
-        if (this._flushTimer) clearTimeout(this._flushTimer);
-        this._flushTimer = setTimeout(() => this._flushDirty(), 300);
+        if (this._updateTimer) clearTimeout(this._updateTimer);
+        this._updateTimer = setTimeout(() => this._processPending(), 500);
     }
 
-    _flushDirty() {
-        if (this._dirtyPaths.size === 0) return;
+    _processPending() {
+        if (this._destroyed) return;
+        if (this._pendingPaths.size === 0) return;
 
-        const dirty = new Set(this._dirtyPaths);
-        this._dirtyPaths.clear();
+        const paths = new Set(this._pendingPaths);
+        this._pendingPaths.clear();
 
-        for (const path of dirty) {
+        // Update cache for all pending paths
+        for (const path of paths) {
             try {
                 const item = this.plugin.cache.items.get(path);
-                const cardEl = this._cardElements.get(path);
-
-                if (!item && cardEl) {
-                    // File deleted — remove card
-                    cardEl.remove();
-                    this._cardElements.delete(path);
-                } else if (item && cardEl) {
-                    // File updated — patch card in-place
-                    cardEl.className = `cms-card cms-card-${item.validation.status}`;
-                    cardEl.setAttribute("data-validation", item.validation.status);
-                    cardEl.setAttribute("data-draft", String(item.draft === true));
-                    cardEl.setAttribute("data-publish", item.status);
-                    this._populateCard(cardEl, item);
-                } else if (item && !cardEl) {
-                    // File added — create new card
-                    this._createCardElement(item);
+                if (item) {
+                    // File still in cache — it was an update
+                    const file = this.app.vault.getAbstractFileByPath(path);
+                    if (file && file.extension === "md") {
+                        this.plugin.cache.updateFile(file, this.app, this.plugin.settings);
+                    }
                 }
+                // If item was removed (delete handler), cache is already updated
             } catch (e) {
-                console.error("Astro CMS: error flushing path", path, e);
+                console.error("Astro CMS: error updating cache for", path, e);
             }
         }
 
-        // Single batch update for filters + stats
-        this.applyFilters();
-        this._renderStats();
-        this._renderMetaSection(this._getContainer());
+        // Refresh the entire dashboard (simple, safe, debounced)
+        this._refreshView();
+    }
+
+    _refreshView() {
+        if (this._destroyed || !this._ready) return;
+        try {
+            this.renderDashboard();
+        } catch (e) {
+            console.error("Astro CMS: refresh failed", e);
+        }
     }
 
     _getContainer() {
-        return this.containerEl.children[1] || this.containerEl.createDiv();
+        try {
+            return this.containerEl.children[1] || this.containerEl.createDiv();
+        } catch (e) {
+            return null;
+        }
     }
 
-    /* ─── FULL RENDER (called once on open + manual refresh) ─── */
+    /* ─── FULL RENDER ─── */
 
     renderDashboard() {
-        let container;
-        try { container = this._getContainer(); } catch (e) { return; }
+        const container = this._getContainer();
+        if (!container) return;
 
         container.empty();
         container.addClass("astro-cms-dashboard");
@@ -384,10 +431,12 @@ class AstroCMSDashboardView extends obsidian.ItemView {
                 .addEventListener("click", () => this._bulkPreflight());
             actionsGroup.createEl("button", { text: "Refresh", cls: "cms-btn cms-btn-secondary" })
                 .addEventListener("click", () => {
-                    this.plugin.cache.scanAll(this.app, this.plugin.settings);
-                    this._ready = false;
-                    this.renderDashboard();
-                    this._ready = true;
+                    try {
+                        this.plugin.cache.scanAll(this.app, this.plugin.settings);
+                        this.renderDashboard();
+                    } catch (e) {
+                        console.error("Astro CMS: refresh failed", e);
+                    }
                 });
 
             // ─── Content Grid ───
@@ -428,19 +477,23 @@ class AstroCMSDashboardView extends obsidian.ItemView {
     _renderStats() {
         if (!this._statsEl) return;
         this._statsEl.empty();
-        const s = this.plugin.cache.getStats();
-        const cards = [
-            { label: "Total Posts", value: s.total, cls: "" },
-            { label: "Published", value: s.published, cls: "cms-stat-success" },
-            { label: "Drafts", value: s.drafts, cls: "cms-stat-warning" },
-            { label: "Errors", value: s.errors, cls: "cms-stat-error" },
-            { label: "Warnings", value: s.warnings, cls: "cms-stat-warn" },
-            { label: "Ready", value: s.ready, cls: "cms-stat-success" },
-        ];
-        for (const c of cards) {
-            const el = this._statsEl.createEl("div", { cls: `cms-stat-card ${c.cls}` });
-            el.createEl("div", { text: String(c.value), cls: "cms-stat-value" });
-            el.createEl("div", { text: c.label, cls: "cms-stat-label" });
+        try {
+            const s = this.plugin.cache.getStats();
+            const cards = [
+                { label: "Total Posts", value: s.total, cls: "" },
+                { label: "Published", value: s.published, cls: "cms-stat-success" },
+                { label: "Drafts", value: s.drafts, cls: "cms-stat-warning" },
+                { label: "Errors", value: s.errors, cls: "cms-stat-error" },
+                { label: "Warnings", value: s.warnings, cls: "cms-stat-warn" },
+                { label: "Ready", value: s.ready, cls: "cms-stat-success" },
+            ];
+            for (const c of cards) {
+                const el = this._statsEl.createEl("div", { cls: `cms-stat-card ${c.cls}` });
+                el.createEl("div", { text: String(c.value), cls: "cms-stat-value" });
+                el.createEl("div", { text: c.label, cls: "cms-stat-label" });
+            }
+        } catch (e) {
+            console.error("Astro CMS: stats render error", e);
         }
     }
 
@@ -448,18 +501,23 @@ class AstroCMSDashboardView extends obsidian.ItemView {
 
     _createCardElement(item) {
         if (!this._gridEl) return null;
-        const card = this._gridEl.createEl("div", {
-            cls: `cms-card cms-card-${item.validation.status}`,
-            attr: {
-                "data-path": item.path,
-                "data-validation": item.validation.status,
-                "data-draft": String(item.draft === true),
-                "data-publish": item.status,
-            },
-        });
-        this._populateCard(card, item);
-        this._cardElements.set(item.path, card);
-        return card;
+        try {
+            const card = this._gridEl.createEl("div", {
+                cls: `cms-card cms-card-${item.validation.status}`,
+                attr: {
+                    "data-path": item.path,
+                    "data-validation": item.validation.status,
+                    "data-draft": String(item.draft === true),
+                    "data-publish": item.status,
+                },
+            });
+            this._populateCard(card, item);
+            this._cardElements.set(item.path, card);
+            return card;
+        } catch (e) {
+            console.error("Astro CMS: card creation error", e);
+            return null;
+        }
     }
 
     _populateCard(card, item) {
@@ -496,150 +554,175 @@ class AstroCMSDashboardView extends obsidian.ItemView {
 
         const cardActions = card.createEl("div", { cls: "cms-card-actions" });
         cardActions.createEl("button", { text: "Open", cls: "cms-btn cms-btn-sm" })
-            .addEventListener("click", () => this.app.workspace.getLeaf(false).openFile(item.file));
+            .addEventListener("click", () => {
+                if (item.file) this.app.workspace.getLeaf(false).openFile(item.file);
+            });
         if (item.draft === true) {
             cardActions.createEl("button", { text: "Pre-Flight", cls: "cms-btn cms-btn-sm cms-btn-primary" })
                 .addEventListener("click", () => this._preflightSingle(item.file));
         }
         cardActions.createEl("button", { text: "Validate", cls: "cms-btn cms-btn-sm cms-btn-secondary" })
             .addEventListener("click", () => {
-                const r = AstroCMSValidator.getStatusForFile(item.file, this.app, this.plugin.settings);
-                new obsidian.Notice(r.errors.length === 0
-                    ? `${item.file.basename}: All fields valid!`
-                    : `${item.file.basename}: ${r.errors.filter(e => e.severity === "error").length} error(s), ${r.errors.filter(e => e.severity === "warning").length} warning(s)`);
+                try {
+                    const r = AstroCMSValidator.getStatusForFile(item.file, this.app, this.plugin.settings);
+                    new obsidian.Notice(r.errors.length === 0
+                        ? `${item.file.basename}: All fields valid!`
+                        : `${item.file.basename}: ${r.errors.filter(e => e.severity === "error").length} error(s), ${r.errors.filter(e => e.severity === "warning").length} warning(s)`);
+                } catch (e) {
+                    new obsidian.Notice(`Validation failed: ${e.message}`);
+                }
             });
     }
 
     /* ─── CSS-BASED SEARCH & FILTER ─── */
 
     applyFilters() {
-        const filter = this.currentFilter;
-        const search = this.searchQuery.toLowerCase().trim();
-        let visibleCount = 0;
+        try {
+            const filter = this.currentFilter;
+            const search = this.searchQuery.toLowerCase().trim();
+            let visibleCount = 0;
 
-        for (const [path, cardEl] of this._cardElements) {
-            const item = this.plugin.cache.items.get(path);
-            if (!item) { cardEl.style.display = "none"; continue; }
-            const matches = this.plugin.cache.matchesFilter(item, filter, search);
-            const beyondPage = matches && visibleCount >= this._visibleLimit;
-            if (matches) visibleCount++;
-            cardEl.style.display = (!matches || beyondPage) ? "none" : "";
+            for (const [path, cardEl] of this._cardElements) {
+                const item = this.plugin.cache.items.get(path);
+                if (!item) { cardEl.style.display = "none"; continue; }
+                const matches = this.plugin.cache.matchesFilter(item, filter, search);
+                const beyondPage = matches && visibleCount >= this._visibleLimit;
+                if (matches) visibleCount++;
+                cardEl.style.display = (!matches || beyondPage) ? "none" : "";
+            }
+
+            this._totalVisible = visibleCount;
+            this._updateLoadMore();
+        } catch (e) {
+            console.error("Astro CMS: filter error", e);
         }
-
-        this._totalVisible = visibleCount;
-        this._updateLoadMore();
     }
 
     _updateLoadMore() {
         if (!this._loadMoreEl) return;
-        this._loadMoreEl.style.display = this._totalVisible > this._visibleLimit ? "" : "none";
-        const btn = this._loadMoreEl.querySelector("button");
-        if (btn) btn.textContent = `Load More (${this._totalVisible - this._visibleLimit} remaining)`;
+        try {
+            this._loadMoreEl.style.display = this._totalVisible > this._visibleLimit ? "" : "none";
+            const btn = this._loadMoreEl.querySelector("button");
+            if (btn) btn.textContent = `Load More (${Math.max(0, this._totalVisible - this._visibleLimit)} remaining)`;
+        } catch (e) { /* ignore */ }
     }
 
     /* ─── META SECTION ─── */
 
     _renderMetaSection(container) {
         if (!container) return;
-        const existing = container.querySelector(".cms-meta-section");
-        if (existing) existing.remove();
+        try {
+            const existing = container.querySelector(".cms-meta-section");
+            if (existing) existing.remove();
 
-        const stats = this.plugin.cache.getStats();
-        if (stats.uniqueTags.length === 0 && stats.allEras.length === 0 && stats.allSeries.length === 0) return;
+            const stats = this.plugin.cache.getStats();
+            if (stats.uniqueTags.length === 0 && stats.allEras.length === 0 && stats.allSeries.length === 0) return;
 
-        const items = this.plugin.cache.getSortedItems();
-        const section = container.createEl("div", { cls: "cms-meta-section" });
+            const items = this.plugin.cache.getSortedItems();
+            const section = container.createEl("div", { cls: "cms-meta-section" });
 
-        if (stats.uniqueTags.length > 0) {
-            const block = section.createEl("div", { cls: "cms-meta-block" });
-            block.createEl("h4", { text: `Tags (${stats.uniqueTags.length})`, cls: "cms-meta-heading" });
-            const list = block.createEl("div", { cls: "cms-tag-list" });
-            for (const tag of stats.uniqueTags.sort()) {
-                list.createEl("span", { text: `${tag} (${items.filter(i => i.tags.includes(tag)).length})`, cls: "cms-tag-chip" });
+            if (stats.uniqueTags.length > 0) {
+                const block = section.createEl("div", { cls: "cms-meta-block" });
+                block.createEl("h4", { text: `Tags (${stats.uniqueTags.length})`, cls: "cms-meta-heading" });
+                const list = block.createEl("div", { cls: "cms-tag-list" });
+                for (const tag of stats.uniqueTags.sort()) {
+                    list.createEl("span", { text: `${tag} (${items.filter(i => i.tags.includes(tag)).length})`, cls: "cms-tag-chip" });
+                }
             }
-        }
-        if (stats.allEras.length > 0) {
-            const block = section.createEl("div", { cls: "cms-meta-block" });
-            block.createEl("h4", { text: `Eras (${stats.allEras.length})`, cls: "cms-meta-heading" });
-            const list = block.createEl("div", { cls: "cms-tag-list" });
-            for (const era of stats.allEras.sort()) {
-                list.createEl("span", { text: `${era} (${items.filter(i => i.era === era).length})`, cls: "cms-tag-chip cms-era-chip" });
+            if (stats.allEras.length > 0) {
+                const block = section.createEl("div", { cls: "cms-meta-block" });
+                block.createEl("h4", { text: `Eras (${stats.allEras.length})`, cls: "cms-meta-heading" });
+                const list = block.createEl("div", { cls: "cms-tag-list" });
+                for (const era of stats.allEras.sort()) {
+                    list.createEl("span", { text: `${era} (${items.filter(i => i.era === era).length})`, cls: "cms-tag-chip cms-era-chip" });
+                }
             }
-        }
-        if (stats.allSeries.length > 0) {
-            const block = section.createEl("div", { cls: "cms-meta-block" });
-            block.createEl("h4", { text: `Series (${stats.allSeries.length})`, cls: "cms-meta-heading" });
-            const list = block.createEl("div", { cls: "cms-tag-list" });
-            for (const s of stats.allSeries.sort()) {
-                list.createEl("span", { text: `${s} (${items.filter(i => i.series === s).length})`, cls: "cms-tag-chip cms-series-chip" });
+            if (stats.allSeries.length > 0) {
+                const block = section.createEl("div", { cls: "cms-meta-block" });
+                block.createEl("h4", { text: `Series (${stats.allSeries.length})`, cls: "cms-meta-heading" });
+                const list = block.createEl("div", { cls: "cms-tag-list" });
+                for (const s of stats.allSeries.sort()) {
+                    list.createEl("span", { text: `${s} (${items.filter(i => i.series === s).length})`, cls: "cms-tag-chip cms-series-chip" });
+                }
             }
+        } catch (e) {
+            console.error("Astro CMS: meta section error", e);
         }
     }
 
     /* ─── ACTIONS ─── */
 
     async _preflightSingle(file) {
+        if (!file) return;
         try {
             await this.app.fileManager.processFrontMatter(file, (fm) => {
                 fm["draft"] = false; fm["status"] = "published";
                 fm["date"] = new Date().toISOString().split('T')[0];
             });
             new obsidian.Notice(`Pre-flight complete: ${file.basename}`);
-            this.plugin.cache.updateFile(file, this.app, this.plugin.settings);
-            this._markDirty(file.path);
+            // Cache will be updated by the debounced event handler
         } catch (e) {
             new obsidian.Notice(`Pre-flight failed: ${e.message}`);
         }
     }
 
     async _bulkPreflight() {
-        const items = this.plugin.cache.getSortedItems().filter(i => i.draft === true);
-        if (items.length === 0) { new obsidian.Notice("No drafts to pre-flight."); return; }
-        const confirmed = await this._confirmAction(
-            `Pre-flight ${items.length} draft(s)?`,
-            `This will set draft=false, status="published", and today's date on all draft posts.`
-        );
-        if (!confirmed) return;
-        let success = 0;
-        for (const item of items) {
-            try {
-                await this.app.fileManager.processFrontMatter(item.file, (fm) => {
-                    fm["draft"] = false; fm["status"] = "published";
-                    fm["date"] = new Date().toISOString().split('T')[0];
-                });
-                success++;
-            } catch (e) { /* skip */ }
+        try {
+            const items = this.plugin.cache.getSortedItems().filter(i => i.draft === true);
+            if (items.length === 0) { new obsidian.Notice("No drafts to pre-flight."); return; }
+            const confirmed = await this._confirmAction(
+                `Pre-flight ${items.length} draft(s)?`,
+                `This will set draft=false, status="published", and today's date on all draft posts.`
+            );
+            if (!confirmed) return;
+            let success = 0;
+            for (const item of items) {
+                try {
+                    await this.app.fileManager.processFrontMatter(item.file, (fm) => {
+                        fm["draft"] = false; fm["status"] = "published";
+                        fm["date"] = new Date().toISOString().split('T')[0];
+                    });
+                    success++;
+                } catch (e) { /* skip */ }
+            }
+            new obsidian.Notice(`Pre-flight complete: ${success}/${items.length} posts updated.`);
+            // Refresh after bulk operation
+            this.plugin.cache.scanAll(this.app, this.plugin.settings);
+            this.renderDashboard();
+        } catch (e) {
+            new obsidian.Notice(`Bulk pre-flight failed: ${e.message}`);
         }
-        new obsidian.Notice(`Pre-flight complete: ${success}/${items.length} posts updated.`);
-        this.plugin.cache.scanAll(this.app, this.plugin.settings);
-        this._ready = false;
-        this.renderDashboard();
-        this._ready = true;
     }
 
     async _confirmAction(title, message) {
         return new Promise((resolve) => {
-            const modal = new obsidian.Modal(this.app);
-            modal.titleEl.setText(title);
-            modal.contentEl.createEl("p", { text: message });
-            const btnRow = modal.contentEl.createEl("div", { cls: "cms-modal-btn-row" });
-            btnRow.createEl("button", { text: "Cancel", cls: "cms-btn cms-btn-secondary" })
-                .addEventListener("click", () => { modal.close(); resolve(false); });
-            btnRow.createEl("button", { text: "Confirm", cls: "cms-btn cms-btn-primary" })
-                .addEventListener("click", () => { modal.close(); resolve(true); });
-            modal.open();
+            try {
+                const modal = new obsidian.Modal(this.app);
+                modal.titleEl.setText(title);
+                modal.contentEl.createEl("p", { text: message });
+                const btnRow = modal.contentEl.createEl("div", { cls: "cms-modal-btn-row" });
+                btnRow.createEl("button", { text: "Cancel", cls: "cms-btn cms-btn-secondary" })
+                    .addEventListener("click", () => { modal.close(); resolve(false); });
+                btnRow.createEl("button", { text: "Confirm", cls: "cms-btn cms-btn-primary" })
+                    .addEventListener("click", () => { modal.close(); resolve(true); });
+                modal.open();
+            } catch (e) {
+                resolve(false);
+            }
         });
     }
 
     async onClose() {
-        if (this._flushTimer) clearTimeout(this._flushTimer);
-        this._cardElements.clear();
+        this._destroyed = true;
         this._ready = false;
+        if (this._updateTimer) clearTimeout(this._updateTimer);
+        this._cardElements.clear();
+        this._pendingPaths.clear();
     }
 }
 
 /* ═══════════════════════════════════════════════════════════
-   SIDEBAR VIEW — lightweight, debounced
+   SIDEBAR VIEW — lightweight, debounced, layoutReady-gated
    ═══════════════════════════════════════════════════════════ */
 
 const VIEW_TYPE_SIDEBAR = "astro-cms-sidebar-view";
@@ -649,6 +732,7 @@ class AstroCMSSidebarView extends obsidian.ItemView {
         super(leaf);
         this.plugin = plugin;
         this._updateTimer = null;
+        this._destroyed = false;
     }
 
     getViewType() { return VIEW_TYPE_SIDEBAR; }
@@ -656,73 +740,111 @@ class AstroCMSSidebarView extends obsidian.ItemView {
     getIcon() { return "checklist"; }
 
     async onOpen() {
-        this.registerEvent(this.app.workspace.on("active-file-change", () => this._debounceUpdate()));
+        this._destroyed = false;
+
+        this.registerEvent(this.app.workspace.on("active-file-change", () => {
+            if (!this.app.workspace.layoutReady) return;
+            if (this._destroyed) return;
+            this._debounceUpdate();
+        }));
+
         this.registerEvent(this.app.metadataCache.on("changed", (file) => {
+            // Skip startup flood
+            if (!this.app.workspace.layoutReady) return;
+            if (this._destroyed) return;
             const active = this.app.workspace.getActiveFile();
             if (active && file.path === active.path) this._debounceUpdate();
         }));
-        setTimeout(() => this.updateUI(), 100);
+
+        // Wait for layout ready before showing content
+        if (this.app.workspace.layoutReady) {
+            this._debounceUpdate();
+        } else {
+            const ref = this.app.workspace.on("layout-ready", () => {
+                this.app.workspace.offref(ref);
+                this._debounceUpdate();
+            });
+            this.registerEvent(ref);
+            this._showLoading();
+        }
+    }
+
+    _showLoading() {
+        try {
+            const container = this.containerEl.children[1];
+            if (!container) return;
+            container.empty();
+            container.addClass("astro-cms-sidebar");
+            container.createEl("div", { text: "Waiting for Obsidian to finish loading...", cls: "cms-sidebar-empty-state" });
+        } catch (e) { /* ignore */ }
     }
 
     _debounceUpdate() {
+        if (this._destroyed) return;
         if (this._updateTimer) clearTimeout(this._updateTimer);
-        this._updateTimer = setTimeout(() => this.updateUI(), 300);
+        this._updateTimer = setTimeout(() => this.updateUI(), 400);
     }
 
     updateUI() {
-        const container = this.containerEl.children[1];
-        if (!container) return;
-        container.empty();
-        container.addClass("astro-cms-sidebar");
-        const activeFile = this.app.workspace.getActiveFile();
+        if (this._destroyed) return;
+        try {
+            const container = this.containerEl.children[1];
+            if (!container) return;
+            container.empty();
+            container.addClass("astro-cms-sidebar");
+            const activeFile = this.app.workspace.getActiveFile();
 
-        if (!activeFile || activeFile.extension !== "md" || !activeFile.path.startsWith(this.plugin.settings.contentPath)) {
-            container.createEl("div", { text: `Open a file in ${this.plugin.settings.contentPath} to validate.`, cls: "cms-sidebar-empty-state" });
-            return;
-        }
-
-        const cached = this.plugin.cache.items.get(activeFile.path);
-        const result = cached ? cached.validation : AstroCMSValidator.getStatusForFile(activeFile, this.app, this.plugin.settings);
-
-        container.createEl("div", { text: "Quick Validate", cls: "cms-sidebar-title" });
-        container.createEl("div", { text: activeFile.path, cls: "cms-sidebar-file-title" });
-
-        const statusWrapper = container.createEl("div", { cls: "cms-status-wrapper" });
-        const badgeMap = { ready: { text: "Ready for GitHub", cls: "cms-badge-success" }, error: { text: "Structural Errors Found", cls: "cms-badge-error" }, warning: { text: "Optimization Warnings", cls: "cms-badge-warning" } };
-        const badge = badgeMap[result.status] || badgeMap.error;
-        statusWrapper.createEl("span", { text: badge.text, cls: `cms-badge ${badge.cls}` });
-
-        container.createEl("hr");
-        const listContainer = container.createEl("div", { cls: "cms-diagnostics-list" });
-
-        if (result.errors.length === 0) {
-            listContainer.createEl("div", { text: "All fields look perfect! Ready to push cleanly to production.", cls: "cms-success-text" });
-        } else {
-            for (const error of result.errors) {
-                const errorItem = listContainer.createEl("div", { cls: `cms-error-item severity-${error.severity}` });
-                errorItem.createEl("div", { text: error.field, cls: "cms-error-field" });
-                errorItem.createEl("p", { text: error.message, cls: "cms-error-message" });
+            if (!activeFile || activeFile.extension !== "md" || !activeFile.path.startsWith(this.plugin.settings.contentPath)) {
+                container.createEl("div", { text: `Open a file in ${this.plugin.settings.contentPath} to validate.`, cls: "cms-sidebar-empty-state" });
+                return;
             }
-        }
 
-        const actions = container.createEl("div", { cls: "cms-sidebar-actions" });
-        actions.createEl("button", { text: "Pre-Flight This Post", cls: "cms-btn cms-btn-primary cms-btn-full" })
-            .addEventListener("click", async () => {
-                try {
-                    await this.app.fileManager.processFrontMatter(activeFile, (fm) => {
-                        fm["draft"] = false; fm["status"] = "published";
-                        fm["date"] = new Date().toISOString().split('T')[0];
-                    });
-                    new obsidian.Notice(`Pre-flight complete: ${activeFile.basename}`);
-                    this.plugin.cache.updateFile(activeFile, this.app, this.plugin.settings);
-                    this.updateUI();
-                } catch (e) { new obsidian.Notice(`Pre-flight failed: ${e.message}`); }
-            });
-        actions.createEl("button", { text: "Open Dashboard", cls: "cms-btn cms-btn-secondary cms-btn-full" })
-            .addEventListener("click", () => this.plugin.activateDashboard());
+            const cached = this.plugin.cache.items.get(activeFile.path);
+            const result = cached ? cached.validation : AstroCMSValidator.getStatusForFile(activeFile, this.app, this.plugin.settings);
+
+            container.createEl("div", { text: "Quick Validate", cls: "cms-sidebar-title" });
+            container.createEl("div", { text: activeFile.path, cls: "cms-sidebar-file-title" });
+
+            const statusWrapper = container.createEl("div", { cls: "cms-status-wrapper" });
+            const badgeMap = { ready: { text: "Ready for GitHub", cls: "cms-badge-success" }, error: { text: "Structural Errors Found", cls: "cms-badge-error" }, warning: { text: "Optimization Warnings", cls: "cms-badge-warning" } };
+            const badge = badgeMap[result.status] || badgeMap.error;
+            statusWrapper.createEl("span", { text: badge.text, cls: `cms-badge ${badge.cls}` });
+
+            container.createEl("hr");
+            const listContainer = container.createEl("div", { cls: "cms-diagnostics-list" });
+
+            if (result.errors.length === 0) {
+                listContainer.createEl("div", { text: "All fields look perfect! Ready to push cleanly to production.", cls: "cms-success-text" });
+            } else {
+                for (const error of result.errors) {
+                    const errorItem = listContainer.createEl("div", { cls: `cms-error-item severity-${error.severity}` });
+                    errorItem.createEl("div", { text: error.field, cls: "cms-error-field" });
+                    errorItem.createEl("p", { text: error.message, cls: "cms-error-message" });
+                }
+            }
+
+            const actions = container.createEl("div", { cls: "cms-sidebar-actions" });
+            actions.createEl("button", { text: "Pre-Flight This Post", cls: "cms-btn cms-btn-primary cms-btn-full" })
+                .addEventListener("click", async () => {
+                    try {
+                        await this.app.fileManager.processFrontMatter(activeFile, (fm) => {
+                            fm["draft"] = false; fm["status"] = "published";
+                            fm["date"] = new Date().toISOString().split('T')[0];
+                        });
+                        new obsidian.Notice(`Pre-flight complete: ${activeFile.basename}`);
+                        // Cache will be updated by debounced handler
+                        this._debounceUpdate();
+                    } catch (e) { new obsidian.Notice(`Pre-flight failed: ${e.message}`); }
+                });
+            actions.createEl("button", { text: "Open Dashboard", cls: "cms-btn cms-btn-secondary cms-btn-full" })
+                .addEventListener("click", () => this.plugin.activateDashboard());
+        } catch (e) {
+            console.error("Astro CMS: sidebar update error", e);
+        }
     }
 
     async onClose() {
+        this._destroyed = true;
         if (this._updateTimer) clearTimeout(this._updateTimer);
     }
 }
@@ -763,7 +885,7 @@ class AstroCMSSettingTab extends obsidian.PluginSettingTab {
 
         containerEl.createEl("h3", { text: "Graph Integration" });
 
-        new obsidian.Setting(containerEl).setName("Auto-sync graph links").setDesc("Inject 'connects', 'series', and 'era' as graph links for the Obsidian graph view")
+        new obsidian.Setting(containerEl).setName("Auto-sync graph links").setDesc("WARNING: Injects dynamic links into Obsidian's graph view. May cause performance issues with large vaults. Disabled by default.")
             .addToggle(toggle => toggle.setValue(this.plugin.settings.autoSyncGraph).onChange(async (value) => { this.plugin.settings.autoSyncGraph = value; await this.plugin.saveSettings(); }));
 
         containerEl.createEl("h3", { text: "Appearance" });
@@ -798,54 +920,80 @@ module.exports = class AstroCMSPlugin extends obsidian.Plugin {
 
         this.addSettingTab(new AstroCMSSettingTab(this.app, this));
 
-        // Graph link injection (debounced batch)
+        // Graph link injection — ONLY after layout ready, debounced, and safe
         this._linkQueue = new Map();
         this._linkTimer = null;
+        this._graphReady = false;
 
-        this.registerEvent(
-            this.app.metadataCache.on("changed", (file) => {
-                if (!this.settings.autoSyncGraph) return;
-                if (!file.path.startsWith(this.settings.contentPath)) return;
-                const cache = this.app.metadataCache.getFileCache(file);
-                if (!cache || !cache.frontmatter) return;
-                const fm = cache.frontmatter;
-                const dynamicLinks = [];
-                if (Array.isArray(fm["connects"])) dynamicLinks.push(...fm["connects"]);
-                else if (typeof fm["connects"] === "string") dynamicLinks.push(...fm["connects"].split(",").map(s => s.trim()));
-                if (fm["series"]) dynamicLinks.push(String(fm["series"]));
-                if (fm["era"]) dynamicLinks.push(String(fm["era"]));
-                if (dynamicLinks.length === 0) return;
-                this._linkQueue.set(file.path, { file, dynamicLinks });
-                this._scheduleLinkInjection();
-            })
-        );
+        // Wait for full layout ready before enabling graph sync
+        if (this.app.workspace.layoutReady) {
+            this._enableGraphSync();
+        } else {
+            const ref = this.app.workspace.on("layout-ready", () => {
+                this.app.workspace.offref(ref);
+                // Extra delay: wait 3 seconds after layout ready for all metadata to settle
+                setTimeout(() => this._enableGraphSync(), 3000);
+            });
+            this.registerEvent(ref);
+        }
 
         console.log("Astro CMS Plugin v" + this.manifest.version + " loaded");
     }
 
+    _enableGraphSync() {
+        this._graphReady = true;
+        this.registerEvent(
+            this.app.metadataCache.on("changed", (file) => {
+                if (!this._graphReady) return;
+                if (!this.settings.autoSyncGraph) return;
+                if (!file.path.startsWith(this.settings.contentPath)) return;
+                try {
+                    const cache = this.app.metadataCache.getFileCache(file);
+                    if (!cache || !cache.frontmatter) return;
+                    const fm = cache.frontmatter;
+                    const dynamicLinks = [];
+                    if (Array.isArray(fm["connects"])) dynamicLinks.push(...fm["connects"]);
+                    else if (typeof fm["connects"] === "string") dynamicLinks.push(...fm["connects"].split(",").map(s => s.trim()));
+                    if (fm["series"]) dynamicLinks.push(String(fm["series"]));
+                    if (fm["era"]) dynamicLinks.push(String(fm["era"]));
+                    if (dynamicLinks.length === 0) return;
+                    this._linkQueue.set(file.path, { file, dynamicLinks });
+                    this._scheduleLinkInjection();
+                } catch (e) { /* skip */ }
+            })
+        );
+    }
+
     _scheduleLinkInjection() {
         if (this._linkTimer) clearTimeout(this._linkTimer);
-        this._linkTimer = setTimeout(() => this._processLinkQueue(), 500);
+        this._linkTimer = setTimeout(() => this._processLinkQueue(), 1000);
     }
 
     _processLinkQueue() {
-        for (const [, { file, dynamicLinks }] of this._linkQueue) {
+        if (!this._graphReady) return;
+        const batch = new Map(this._linkQueue);
+        this._linkQueue.clear();
+
+        for (const [, { file, dynamicLinks }] of batch) {
             try {
                 const cache = this.app.metadataCache.getFileCache(file);
                 if (!cache) continue;
+                // SAFE: Only add links if they don't already exist (prevents cascading)
                 if (!cache.links) cache.links = [];
                 for (const dest of dynamicLinks) {
                     if (dest && !cache.links.some(l => l.link === dest)) {
-                        cache.links.push({ link: dest, original: `[[${dest}]]`, displayText: dest,
-                            position: { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 0, offset: 0 } } });
+                        cache.links.push({
+                            link: dest, original: `[[${dest}]]`, displayText: dest,
+                            position: { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 0, offset: 0 } }
+                        });
                     }
                 }
             } catch (e) { /* skip */ }
         }
-        this._linkQueue.clear();
     }
 
     async onunload() {
+        this._graphReady = false;
         if (this._linkTimer) clearTimeout(this._linkTimer);
         this.app.workspace.detachLeavesOfType(VIEW_TYPE_DASHBOARD);
         this.app.workspace.detachLeavesOfType(VIEW_TYPE_SIDEBAR);
@@ -856,7 +1004,7 @@ module.exports = class AstroCMSPlugin extends obsidian.Plugin {
         const migrated = migrateSettings(loaded || {});
         this.settings = Object.assign({}, DEFAULT_SETTINGS, migrated);
         this.settings._version = SETTINGS_VERSION;
-        await this.saveSettings();
+        await this.saveData(this.settings);
     }
 
     async saveSettings() { await this.saveData(this.settings); }
@@ -889,27 +1037,35 @@ module.exports = class AstroCMSPlugin extends obsidian.Plugin {
     validateCurrentFile() {
         const file = this.app.workspace.getActiveFile();
         if (!file || !file.path.startsWith(this.settings.contentPath)) { new obsidian.Notice("Open a file in the content folder first."); return; }
-        const result = AstroCMSValidator.getStatusForFile(file, this.app, this.settings);
-        if (result.errors.length === 0) { new obsidian.Notice(`${file.basename}: All fields valid!`); }
-        else {
-            const e = result.errors.filter(e => e.severity === "error").length;
-            const w = result.errors.filter(e => e.severity === "warning").length;
-            new obsidian.Notice(`${file.basename}: ${e} error(s), ${w} warning(s)`);
+        try {
+            const result = AstroCMSValidator.getStatusForFile(file, this.app, this.settings);
+            if (result.errors.length === 0) { new obsidian.Notice(`${file.basename}: All fields valid!`); }
+            else {
+                const e = result.errors.filter(e => e.severity === "error").length;
+                const w = result.errors.filter(e => e.severity === "warning").length;
+                new obsidian.Notice(`${file.basename}: ${e} error(s), ${w} warning(s)`);
+            }
+        } catch (e) {
+            new obsidian.Notice(`Validation failed: ${e.message}`);
         }
     }
 
     async bulkPreflight() {
-        const items = this.cache.getSortedItems().filter(i => i.draft === true);
-        if (items.length === 0) { new obsidian.Notice("No drafts to pre-flight."); return; }
-        let success = 0;
-        for (const item of items) {
-            try {
-                await this.app.fileManager.processFrontMatter(item.file, (fm) => {
-                    fm["draft"] = false; fm["status"] = "published"; fm["date"] = new Date().toISOString().split('T')[0];
-                });
-                success++;
-            } catch (e) { /* skip */ }
+        try {
+            const items = this.cache.getSortedItems().filter(i => i.draft === true);
+            if (items.length === 0) { new obsidian.Notice("No drafts to pre-flight."); return; }
+            let success = 0;
+            for (const item of items) {
+                try {
+                    await this.app.fileManager.processFrontMatter(item.file, (fm) => {
+                        fm["draft"] = false; fm["status"] = "published"; fm["date"] = new Date().toISOString().split('T')[0];
+                    });
+                    success++;
+                } catch (e) { /* skip */ }
+            }
+            new obsidian.Notice(`Pre-flight complete: ${success}/${items.length} posts updated.`);
+        } catch (e) {
+            new obsidian.Notice(`Bulk pre-flight failed: ${e.message}`);
         }
-        new obsidian.Notice(`Pre-flight complete: ${success}/${items.length} posts updated.`);
     }
 };
