@@ -1,4 +1,4 @@
-# Astro Content Graph CMS
+# isHistory CMS
 
 > **Your Astro website's control panel — inside Obsidian.**
 
@@ -16,17 +16,10 @@ Here's what you get:
 |---|---|
 | **Dashboard** | See all your blog posts in one place, like a spreadsheet |
 | **Validation** | The plugin tells you if a post is missing something (like a title or date) |
-| **Pre-Flight** | One click to change a draft post into a published post |
-| **Quick Validate Sidebar** | See errors on the post you're currently editing |
-| **Bulk Pre-Flight** | Publish many draft posts at the same time |
-
----
-
-## Screenshots
-
-*The Dashboard shows all your content with status badges (Ready / Errors / Warnings), search, filters, and one-click actions.*
-
-*The Sidebar validates the post you're editing in real time — no need to open the dashboard.*
+| **Pre-flight** | One click to change a draft post into a published post |
+| **Quick validate sidebar** | See errors on the post you're currently editing |
+| **Bulk pre-flight** | Publish many draft posts at the same time |
+| **Track system** | Organize posts by type — articles, profiles, or events |
 
 ---
 
@@ -53,13 +46,13 @@ BRAT is a tool that lets you install Obsidian plugins that aren't in the officia
    https://github.com/dr-ishaan/astro-cms-obsidian-plugin
    ```
 5. Click **Add Plugin**
-6. Go back to **Community plugins** and enable **"Astro Content Graph CMS"**
+6. Go back to **Community plugins** and enable **"isHistory CMS"**
 
 ### Step 3: Open the Dashboard
 
 1. Look at the left sidebar in Obsidian — you'll see a new dashboard icon
-2. Click it to open your Astro CMS Dashboard
-3. Or press `Ctrl+P` (or `Cmd+P` on Mac) and search for **"Open Dashboard"**
+2. Click it to open your Astro CMS dashboard
+3. Or press `Ctrl+P` (or `Cmd+P` on Mac) and search for **"Open isHistory dashboard"**
 
 That's it! You're up and running.
 
@@ -68,8 +61,6 @@ That's it! You're up and running.
 ## How to Set Up Your Vault
 
 Your Obsidian vault needs to look like your Astro project's content folder for the plugin to find your posts.
-
-### For the isHistory Project
 
 The plugin looks for content inside `src/content` by default. Your vault should have this structure:
 
@@ -92,8 +83,8 @@ your-vault/
 
 ### If Your Content Is Somewhere Else
 
-1. Go to **Settings → Astro CMS Plugin Settings**
-2. Change the **Content folder path** to wherever your content lives
+1. Go to **Settings → isHistory CMS**
+2. Change the **Archive path** or **Vault path** to wherever your content lives
 3. For example, if you just have blog posts in a `posts/` folder, type `posts`
 
 ---
@@ -140,7 +131,6 @@ publish: true
 tags: [meta, research, notes]
 order: 1
 relatedChapters: "A5, P2, E1"
-seoDescription: "Optional: override the meta description for search engines"
 ---
 
 Your research note content goes here...
@@ -157,7 +147,6 @@ Your research note content goes here...
 | `title` | The name of your post (5–120 characters) | `"The Ancient Dream of Artificial Life"` |
 | `date` | When this post is published (YYYY-MM-DD format) | `2026-05-28` |
 | `description` | A short summary for search engines and previews (15–160 characters) | `"From bronze giants to clockwork wonders..."` |
-| `draft` | Is this a work-in-progress? Must be `true` or `false` (no quotes!) | `false` |
 
 ### Series Fields (Only Needed if Your Post Belongs to a Series)
 
@@ -181,11 +170,9 @@ Your research note content goes here...
 
 | Field | What to Write | Example |
 |---|---|---|
+| `draft` | Is this a work-in-progress? Must be `true` or `false` | `false` |
 | `tags` | A list of topic tags | `["ai-history", "philosophy"]` |
-| `image` | Hero image path | `"/images/a1-hero.jpg"` |
-| `author` | Author name | `"Ishaan"` |
-| `dateModified` | When you last updated the content | `2026-05-28` |
-| `part` | Part/act label within the series | `"Part I · The Dream"` |
+| `image` | Hero image path (must start with `/`) | `"/images/a1-hero.jpg"` |
 
 ---
 
@@ -198,10 +185,10 @@ The plugin checks your posts and shows you exactly what's wrong. Here are the mo
 | Missing title | No `title` field in frontmatter | Add `title: "Your Title"` |
 | Missing date | No `date` field | Add `date: 2026-05-28` |
 | Bad date format | Date is not in YYYY-MM-DD format | Use `2026-05-28` not `May 28, 2026` |
-| Draft not set | `draft` field is missing or has quotes around it | Use `draft: false` (not `draft: "false"`) |
 | Tags not a list | `tags` is a string instead of a list | Use `["tag1", "tag2"]` not `"tag1, tag2"` |
 | Has series but no order | `series` is set but `seriesOrder` is missing | Add `seriesOrder: "A1"` |
 | Missing description | No `description` field | Add `description: "Your description here"` |
+| Draft + published conflict | `draft: true` but `status: "published"` | Set `draft: false` or `status: "upcoming"` |
 
 ---
 
@@ -210,28 +197,28 @@ The plugin checks your posts and shows you exactly what's wrong. Here are the mo
 ### Stats Bar
 
 At the top of the dashboard, you'll see:
-- **Total Posts** — How many posts the plugin found
-- **Published** — Posts with `status: "published"`
+- **Archive** — Number of blog/archive posts
+- **Vault** — Number of research notes
+- **A Articles** / **P Profiles** / **E Events** — Posts per track
 - **Drafts** — Posts with `draft: true`
 - **Errors** — Posts missing required fields
-- **Warnings** — Posts with minor issues
 - **Ready** — Posts that pass all checks
 
-### Search & Filter
+### Search and Filter
 
 - **Search box** — Type to find posts by title, tag, era, or file path
-- **Filter buttons** — Click to show only: All, Ready, Errors, Warnings, Drafts, Published
+- **Filter buttons** — Click to show only: All, Archive, Articles, Profiles, Events, Vault, Drafts, Errors
 
 ### Card Actions
 
-Each post card has three buttons:
+Each post card has buttons:
 - **Open** — Opens the post in the editor
-- **Pre-Flight** — Converts a draft to published (sets `draft: false`, `status: "published"`, and today's date)
 - **Validate** — Shows a quick summary of what's right or wrong
+- **Publish** — Converts a draft to published (sets `draft: false`, `status: "published"`, and today's date if none set)
 
-### Bulk Pre-Flight
+### Bulk Pre-flight
 
-Click the **Bulk Pre-Flight** button to publish all drafts at once. It will ask you to confirm first.
+Click the **Bulk pre-flight all drafts** command to publish all drafts at once. It will ask you to confirm first.
 
 ---
 
@@ -241,7 +228,7 @@ This is a lightweight panel that shows you validation results for whatever post 
 
 **How to open it:**
 1. Press `Ctrl+P` (or `Cmd+P` on Mac)
-2. Search for **"Open Quick Validate Sidebar"**
+2. Search for **"Open quick validate"**
 3. The sidebar shows real-time validation as you type
 
 ---
@@ -252,31 +239,28 @@ You can access these from the command palette (`Ctrl+P` or `Cmd+P`):
 
 | Command | What It Does |
 |---|---|
-| `Open Dashboard` | Opens the full content management dashboard |
-| `Open Quick Validate Sidebar` | Opens the sidebar validator |
-| `Pre-Flight Current Post` | Publishes the post you're editing |
-| `Validate Current Post` | Checks the post you're editing for errors |
-| `Bulk Pre-Flight All Drafts` | Publishes all draft posts at once |
+| `Open isHistory dashboard` | Opens the full content management dashboard |
+| `Open quick validate` | Opens the sidebar validator |
+| `Validate current post` | Checks the post you're editing for errors |
+| `Publish current draft` | Publishes the post you're editing |
+| `New article (A-track)` | Creates a new article post |
+| `New profile (P-track)` | Creates a new profile post |
+| `New event (E-track)` | Creates a new event post |
+| `Validate all content` | Validates all content and shows summary |
+| `Bulk pre-flight all drafts` | Publishes all draft posts at once |
 
 ---
 
 ## Settings
 
-Go to **Settings → Astro CMS Plugin Settings** to configure:
+Go to **Settings → isHistory CMS** to configure:
 
-### Content Folder Path
-Where your Astro content lives inside your vault. Default: `src/content`
-
-### Validation Rules
-- **Required fields** — Which frontmatter fields must be present. Default: `title, description, status, era`
-- **Validate draft field** — Check that `draft` exists and is `true` or `false`. Default: On
-- **Validate date field** — Check that `date` exists and is a valid date. Default: On
+### Content paths
+- **Archive path** — Path to blog/archive content. Default: `src/content/blog`
+- **Vault path** — Path to vault/research content. Default: `src/content/vault`
 
 ### Performance
-- **Cards per page** — How many post cards to show before the "Load More" button. Default: 40. Lower = faster.
-
-### Graph Integration
-- **Auto-sync graph links** — Adds `connects`, `series`, and `era` as links in Obsidian's graph view. Default: On
+- **Cards per page** — How many post cards to show before the "Load more" button. Default: 40. Lower values are faster.
 
 ### Appearance
 - **Show ribbon icon** — Show the dashboard icon in the left ribbon. Default: On
@@ -285,9 +269,9 @@ Where your Astro content lives inside your vault. Default: `src/content`
 
 ## FAQ
 
-### The dashboard shows "No posts found"
+### The dashboard shows "No content found"
 
-Make sure your **Content folder path** in settings matches where your content actually is. If your posts are in `src/content/blog/`, the path should be `src/content`. If they're directly in a `blog/` folder, the path should be `blog`.
+Make sure your **Archive path** or **Vault path** in settings matches where your content actually is. If your posts are in `src/content/blog/`, the archive path should be `src/content/blog`.
 
 ### BRAT says "frozen" next to my plugin version
 
@@ -302,16 +286,15 @@ That's normal! In BRAT, "(frozen)" just means the plugin is pinned to a specific
 
 ### The plugin is slow with many posts
 
-Go to **Settings → Astro CMS Plugin Settings** and lower the **Cards per page** number. Try 20 instead of 40.
+Go to **Settings → isHistory CMS** and lower the **Cards per page** number. Try 20 instead of 40.
 
 ---
 
 ## Built For
 
-This plugin is designed for the **isHistory** Astro project — a 75-article deep-dive into the history of Artificial Intelligence. It uses:
+This plugin is designed for the **isHistory** Astro project — a deep-dive into the history of Artificial Intelligence. It uses:
 
-- **Astro 6** with Content Collections
-- **astro-loader-obsidian** for wiki-link resolution and backlink support
+- **Astro** with Content Collections
 - **Two content collections**: `archive` (blog posts) and `vault` (research notes)
 - **Series system**: Articles (A), Profiles (P), Events (E) — each organized into tracks
 

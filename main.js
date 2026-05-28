@@ -1,7 +1,7 @@
 const obsidian = require('obsidian');
 
 /* ═════════════════════════════════════════════════════════════════════════
-   isHistory CMS Plugin v3.0.1
+   isHistory CMS Plugin v1.0.0
    
    Custom-built CMS for the isHistory Astro project.
    Manages TWO content collections:
@@ -440,7 +440,7 @@ class IsHistoryDashboardView extends obsidian.ItemView {
             if (!this.app.workspace.layoutReady) return;
             if (this._destroyed) return;
             if (!this.plugin.cache.isInCollection(file.path, this.plugin.settings) || file.extension !== "md") return;
-            setTimeout(() => { if (!this._destroyed) this._queuePath(file.path); }, 500);
+            this._queuePath(file.path);
         }));
 
         this.registerEvent(this.app.vault.on("delete", (file) => {
@@ -459,7 +459,7 @@ class IsHistoryDashboardView extends obsidian.ItemView {
                 this._queuePath(oldPath);
             }
             if (this.plugin.cache.isInCollection(file.path, this.plugin.settings) && file.extension === "md") {
-                setTimeout(() => { if (!this._destroyed) this._queuePath(file.path); }, 500);
+                this._queuePath(file.path);
             }
         }));
 
@@ -479,8 +479,8 @@ class IsHistoryDashboardView extends obsidian.ItemView {
         try {
             const c = this._getContainer(); if (!c) return;
             c.empty(); c.addClass("ishistory-dashboard");
-            c.createEl("div", { cls: "cms-loading-state" }).innerHTML =
-                '<div class="cms-empty-title">Loading isHistory CMS...</div>';
+            const loadingEl = c.createEl("div", { cls: "cms-loading-state" });
+            loadingEl.createEl("div", { text: "Loading isHistory CMS...", cls: "cms-empty-title" });
         } catch (e) { /* ignore */ }
     }
 
@@ -573,8 +573,9 @@ class IsHistoryDashboardView extends obsidian.ItemView {
             this._gridEl = container.createEl("div", { cls: "cms-content-grid" });
             const items = cache.getSortedItems();
             if (items.length === 0) {
-                this._gridEl.createEl("div", { cls: "cms-empty-state" }).innerHTML =
-                    '<div class="cms-empty-title">No content found</div><div class="cms-empty-desc">Check your content paths in Settings.</div>';
+                const emptyEl = this._gridEl.createEl("div", { cls: "cms-empty-state" });
+                emptyEl.createEl("div", { text: "No content found", cls: "cms-empty-title" });
+                emptyEl.createEl("div", { text: "Check your content paths in Settings.", cls: "cms-empty-desc" });
             } else {
                 for (const item of items) this._createCardElement(item);
             }
@@ -910,9 +911,9 @@ class IsHistorySettingTab extends obsidian.PluginSettingTab {
 
     display() {
         const { containerEl } = this; containerEl.empty();
-        containerEl.createEl("h2", { text: "isHistory CMS Settings" });
+        // No top-level heading per Obsidian review guidelines
 
-        containerEl.createEl("h3", { text: "Content Paths" });
+        containerEl.createEl("h3", { text: "Content paths" });
         new obsidian.Setting(containerEl).setName("Archive path").setDesc("Path to blog/archive content (default: src/content/blog)")
             .addText(text => text.setPlaceholder("src/content/blog").setValue(this.plugin.settings.archivePath)
                 .onChange(async (v) => { this.plugin.settings.archivePath = v; await this.plugin.saveSettings(); this.plugin.rescanCache(); }));
@@ -933,8 +934,9 @@ class IsHistorySettingTab extends obsidian.PluginSettingTab {
                 this.plugin.updateRibbonIcon();
             }));
 
-        containerEl.createEl("div", { cls: "cms-settings-version" }).innerHTML =
-            `isHistory CMS v${this.plugin.manifest.version} &middot; Schema v${this.plugin.settings._version}`;
+        const versionEl = containerEl.createEl("div", { cls: "cms-settings-version" });
+        versionEl.createEl("span", { text: `isHistory CMS v${this.plugin.manifest.version}` });
+        versionEl.appendText(` \u00B7 Schema v${this.plugin.settings._version}`);
     }
 }
 
@@ -957,19 +959,19 @@ module.exports = class IsHistoryPlugin extends obsidian.Plugin {
                 this._ribbonIcon = null;
             }
 
-            this.addCommand({ id: "open-dashboard", name: "Open isHistory Dashboard", callback: () => this.activateDashboard() });
-            this.addCommand({ id: "open-sidebar", name: "Open Quick Validate", callback: () => this.activateSidebar() });
-            this.addCommand({ id: "validate-current", name: "Validate Current Post", callback: () => this.validateCurrent() });
-            this.addCommand({ id: "publish-current", name: "Publish Current Draft", callback: () => this.publishCurrent() });
-            this.addCommand({ id: "new-article", name: "New Article (A-track)", callback: () => this.newPost("A") });
-            this.addCommand({ id: "new-profile", name: "New Profile (P-track)", callback: () => this.newPost("P") });
-            this.addCommand({ id: "new-event", name: "New Event (E-track)", callback: () => this.newPost("E") });
-            this.addCommand({ id: "bulk-validate", name: "Validate All Content", callback: () => this.bulkValidate() });
-            this.addCommand({ id: "bulk-preflight", name: "Bulk Pre-Flight All Drafts", callback: () => this.bulkPreFlight() });
+            this.addCommand({ id: "open-dashboard", name: "Open isHistory dashboard", callback: () => this.activateDashboard() });
+            this.addCommand({ id: "open-sidebar", name: "Open quick validate", callback: () => this.activateSidebar() });
+            this.addCommand({ id: "validate-current", name: "Validate current post", callback: () => this.validateCurrent() });
+            this.addCommand({ id: "publish-current", name: "Publish current draft", callback: () => this.publishCurrent() });
+            this.addCommand({ id: "new-article", name: "New article (A-track)", callback: () => this.newPost("A") });
+            this.addCommand({ id: "new-profile", name: "New profile (P-track)", callback: () => this.newPost("P") });
+            this.addCommand({ id: "new-event", name: "New event (E-track)", callback: () => this.newPost("E") });
+            this.addCommand({ id: "bulk-validate", name: "Validate all content", callback: () => this.bulkValidate() });
+            this.addCommand({ id: "bulk-preflight", name: "Bulk pre-flight all drafts", callback: () => this.bulkPreFlight() });
 
             this.addSettingTab(new IsHistorySettingTab(this.app, this));
 
-            console.log("isHistory CMS v" + this.manifest.version + " loaded");
+            // Plugin loaded successfully
         } catch (e) {
             console.error("isHistory CMS: fatal onload error", e);
             new obsidian.Notice("isHistory CMS failed to load.");
@@ -1066,6 +1068,7 @@ module.exports = class IsHistoryPlugin extends obsidian.Plugin {
     async newPost(track) {
         try {
             const info = TRACKS[track];
+            if (!info) { new obsidian.Notice(`Unknown track: ${track}`); return; }
             // Find the next available seriesOrder number (avoid collisions with deleted posts)
             const existingOrders = this.cache.getSortedItems("archive")
                 .filter(i => i.track === track && i.seriesOrder)
