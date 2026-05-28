@@ -106,10 +106,10 @@
 .cms-card-warning { border-left-color: #f59e0b; }
 
 /* Track-colored left borders */
-.cms-card-track-A { border-left-color: var(--ish-track-a) !important; }
-.cms-card-track-P { border-left-color: var(--ish-track-p) !important; }
-.cms-card-track-E { border-left-color: var(--ish-track-e) !important; }
-.cms-card-vault { border-left-color: var(--ish-vault) !important; }
+.cms-card.cms-card-track-A { border-left-color: var(--ish-track-a); }
+.cms-card.cms-card-track-P { border-left-color: var(--ish-track-p); }
+.cms-card.cms-card-track-E { border-left-color: var(--ish-track-e); }
+.cms-card.cms-card-vault { border-left-color: var(--ish-vault); }
 
 .cms-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; gap: 8px; }
 .cms-card-title-area { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
@@ -133,7 +133,7 @@
 .cms-card-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
 .cms-meta-item { font-size: 0.76em; color: var(--text-muted); }
 .cms-meta-era { color: #10b981; font-weight: 500; }
-.cms-draft-yes { color: #ef4444 !important; font-weight: 700; }
+.cms-meta-item.cms-draft-yes { color: #ef4444; font-weight: 700; }
 .cms-status-published { color: #10b981; }
 .cms-status-upcoming { color: #f59e0b; }
 .cms-status-planned { color: var(--text-muted); }
