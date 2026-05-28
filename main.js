@@ -1,7 +1,7 @@
 const obsidian = require('obsidian');
 
 /* ═════════════════════════════════════════════════════════════════════════
-   isHistory CMS Plugin v1.0.0
+   isHistory CMS Plugin v1.0.1
    
    Custom-built CMS for the isHistory Astro project.
    Manages TWO content collections:
@@ -690,7 +690,7 @@ class IsHistoryDashboardView extends obsidian.ItemView {
                     } catch (e) { new obsidian.Notice(`Validation failed: ${e.message}`); }
                 });
             if (item.draft) {
-                cardActions.createEl("button", { text: "Publish", cls: "cms-btn cms-btn-sm cms-btn-primary" })
+                cardActions.createEl("button", { text: "Pre-flight", cls: "cms-btn cms-btn-sm cms-btn-primary" })
                     .addEventListener("click", () => this._publishPost(item.file));
             }
 
@@ -710,8 +710,8 @@ class IsHistoryDashboardView extends obsidian.ItemView {
                     fm.date = new Date().toISOString().split('T')[0];
                 }
             });
-            new obsidian.Notice(`Published: ${file.basename}`);
-        } catch (e) { new obsidian.Notice(`Publish failed: ${e.message}`); }
+            new obsidian.Notice(`Pre-flighted: ${file.basename}. Sync with Git to deploy.`);
+        } catch (e) { new obsidian.Notice(`Pre-flight failed: ${e.message}`); }
     }
 
     async _newPost() {
@@ -885,11 +885,11 @@ class IsHistorySidebarView extends obsidian.ItemView {
 
             const actions = container.createEl("div", { cls: "cms-sidebar-actions" });
             if (collection === "archive" && cached && cached.draft) {
-                actions.createEl("button", { text: "Publish This Post", cls: "cms-btn cms-btn-primary cms-btn-full" })
+                actions.createEl("button", { text: "Pre-flight this post", cls: "cms-btn cms-btn-primary cms-btn-full" })
                     .addEventListener("click", async () => {
                         try {
                             await this.app.fileManager.processFrontMatter(activeFile, (fm) => { fm.draft = false; fm.status = "published"; fm.date = new Date().toISOString().split('T')[0]; });
-                            new obsidian.Notice(`Published: ${activeFile.basename}`);
+                            new obsidian.Notice(`Pre-flighted: ${activeFile.basename}. Sync with Git to deploy.`);
                             this._debounceUpdate();
                         } catch (e) { new obsidian.Notice(`Failed: ${e.message}`); }
                     });
@@ -912,6 +912,21 @@ class IsHistorySettingTab extends obsidian.PluginSettingTab {
     display() {
         const { containerEl } = this; containerEl.empty();
         // No top-level heading per Obsidian review guidelines
+
+        // Git sync dependency notice
+        new obsidian.Setting(containerEl)
+            .setName("Deploying to your site")
+            .setDesc("This plugin manages frontmatter and validation only. To deploy changes to your Astro site, install Obsidian Git and configure auto-commit/push, or use your preferred Git sync method.")
+            .addButton(btn => btn.setButtonText("Open Obsidian Git").setClass("mod-cta").onClick(() => {
+                // Try to open Obsidian Git settings if installed
+                const gitPlugin = this.app.plugins.plugins["obsidian-git"];
+                if (gitPlugin) {
+                    this.app.setting.open();
+                    this.app.setting.openTabById("obsidian-git");
+                } else {
+                    window.open("https://github.com/Vinzent03/obsidian-git", "_blank");
+                }
+            }));
 
         containerEl.createEl("h3", { text: "Content paths" });
         new obsidian.Setting(containerEl).setName("Archive path").setDesc("Path to blog/archive content (default: src/content/blog)")
@@ -962,7 +977,7 @@ module.exports = class IsHistoryPlugin extends obsidian.Plugin {
             this.addCommand({ id: "open-dashboard", name: "Open isHistory dashboard", callback: () => this.activateDashboard() });
             this.addCommand({ id: "open-sidebar", name: "Open quick validate", callback: () => this.activateSidebar() });
             this.addCommand({ id: "validate-current", name: "Validate current post", callback: () => this.validateCurrent() });
-            this.addCommand({ id: "publish-current", name: "Publish current draft", callback: () => this.publishCurrent() });
+            this.addCommand({ id: "publish-current", name: "Pre-flight current draft", callback: () => this.publishCurrent() });
             this.addCommand({ id: "new-article", name: "New article (A-track)", callback: () => this.newPost("A") });
             this.addCommand({ id: "new-profile", name: "New profile (P-track)", callback: () => this.newPost("P") });
             this.addCommand({ id: "new-event", name: "New event (E-track)", callback: () => this.newPost("E") });
@@ -1061,7 +1076,7 @@ module.exports = class IsHistoryPlugin extends obsidian.Plugin {
                 fm.status = "published";
                 if (!fm.date) { fm.date = new Date().toISOString().split('T')[0]; }
             });
-            new obsidian.Notice(`Published: ${file.basename}`);
+            new obsidian.Notice(`Pre-flighted: ${file.basename}. Sync with Git to deploy.`);
         } catch (e) { new obsidian.Notice(`Failed: ${e.message}`); }
     }
 
@@ -1107,15 +1122,15 @@ module.exports = class IsHistoryPlugin extends obsidian.Plugin {
         try {
             this.cache.scanAll(this.app, this.settings);
             const drafts = this.cache.getSortedItems("archive").filter(i => i.draft);
-            if (drafts.length === 0) { new obsidian.Notice("No drafts to publish."); return; }
+            if (drafts.length === 0) { new obsidian.Notice("No drafts to pre-flight."); return; }
             const confirmed = await new Promise((resolve) => {
                 const modal = new obsidian.Modal(this.app);
-                modal.titleEl.setText(`Publish ${drafts.length} draft(s)?`);
+                modal.titleEl.setText(`Pre-flight ${drafts.length} draft(s)?`);
                 const body = modal.contentEl.createEl("div");
                 body.createEl("p", { text: `This will set ${drafts.length} draft(s) to draft:false, status:"published". Continue?` });
                 const btnRow = body.createEl("div", { cls: "cms-modal-btn-row" });
                 btnRow.createEl("button", { text: "Cancel", cls: "cms-btn cms-btn-secondary" }).addEventListener("click", () => { modal.close(); resolve(false); });
-                btnRow.createEl("button", { text: "Publish All", cls: "cms-btn cms-btn-primary" }).addEventListener("click", () => { modal.close(); resolve(true); });
+                btnRow.createEl("button", { text: "Pre-flight all", cls: "cms-btn cms-btn-primary" }).addEventListener("click", () => { modal.close(); resolve(true); });
                 modal.open();
             });
             if (!confirmed) return;
@@ -1128,9 +1143,9 @@ module.exports = class IsHistoryPlugin extends obsidian.Plugin {
                         if (!fm.date) { fm.date = new Date().toISOString().split('T')[0]; }
                     });
                     published++;
-                } catch (e) { console.error(`Failed to publish ${item.path}:`, e); }
+                } catch (e) { console.error(`Failed to pre-flight ${item.path}:`, e); }
             }
-            new obsidian.Notice(`Published ${published}/${drafts.length} draft(s).`);
+            new obsidian.Notice(`Pre-flighted ${published}/${drafts.length} draft(s). Sync with Git to deploy.`);
         } catch (e) { new obsidian.Notice(`Bulk pre-flight failed: ${e.message}`); }
     }
 };

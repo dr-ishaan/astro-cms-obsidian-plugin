@@ -16,9 +16,9 @@ Here's what you get:
 |---|---|
 | **Dashboard** | See all your blog posts in one place, like a spreadsheet |
 | **Validation** | The plugin tells you if a post is missing something (like a title or date) |
-| **Pre-flight** | One click to change a draft post into a published post |
+| **Pre-flight** | Marks a draft as ready for deployment (frontmatter only; deploy via Git sync) |
 | **Quick validate sidebar** | See errors on the post you're currently editing |
-| **Bulk pre-flight** | Publish many draft posts at the same time |
+| **Bulk pre-flight** | Mark many draft posts as ready for deployment at once |
 | **Track system** | Organize posts by type — articles, profiles, or events |
 
 ---
@@ -214,11 +214,11 @@ At the top of the dashboard, you'll see:
 Each post card has buttons:
 - **Open** — Opens the post in the editor
 - **Validate** — Shows a quick summary of what's right or wrong
-- **Publish** — Converts a draft to published (sets `draft: false`, `status: "published"`, and today's date if none set)
+- **Pre-flight** — Marks a draft as ready for deployment (sets `draft: false`, `status: "published"`, and today's date if none set)
 
 ### Bulk Pre-flight
 
-Click the **Bulk pre-flight all drafts** command to publish all drafts at once. It will ask you to confirm first.
+Click the **Bulk pre-flight all drafts** command to mark all drafts as ready for deployment. It will ask you to confirm first.
 
 ---
 
@@ -242,18 +242,35 @@ You can access these from the command palette (`Ctrl+P` or `Cmd+P`):
 | `Open isHistory dashboard` | Opens the full content management dashboard |
 | `Open quick validate` | Opens the sidebar validator |
 | `Validate current post` | Checks the post you're editing for errors |
-| `Publish current draft` | Publishes the post you're editing |
+| `Pre-flight current draft` | Marks the draft you're editing as ready for deployment |
 | `New article (A-track)` | Creates a new article post |
 | `New profile (P-track)` | Creates a new profile post |
 | `New event (E-track)` | Creates a new event post |
 | `Validate all content` | Validates all content and shows summary |
-| `Bulk pre-flight all drafts` | Publishes all draft posts at once |
+| `Bulk pre-flight all drafts` | Marks all draft posts as ready for deployment |
+
+---
+
+## Deploying to Your Site
+
+Pre-flighting a post marks it as ready for deployment, but doesn't push it live. To deploy changes to your Astro site:
+
+1. Install [Obsidian Git](https://github.com/Vinzent03/obsidian-git)
+2. Configure it to auto-commit and push on interval (e.g., every 5 minutes)
+3. Your Astro site's CI/CD (Vercel, Netlify, Cloudflare Pages, etc.) detects the push and rebuilds automatically
+
+That's the full pipeline: **Write → Pre-flight → Git sync → Auto-deploy**
+
+You can also use any other Git sync method you prefer — the plugin only manages frontmatter, so any tool that commits and pushes your vault to your Astro repo will work.
 
 ---
 
 ## Settings
 
 Go to **Settings → isHistory CMS** to configure:
+
+### Deploying to your site
+- **Open Obsidian Git** — Opens Obsidian Git settings if installed, or opens the install page. This plugin manages frontmatter and validation only; you need Git sync to deploy.
 
 ### Content paths
 - **Archive path** — Path to blog/archive content. Default: `src/content/blog`
@@ -287,6 +304,10 @@ That's normal! In BRAT, "(frozen)" just means the plugin is pinned to a specific
 ### The plugin is slow with many posts
 
 Go to **Settings → isHistory CMS** and lower the **Cards per page** number. Try 20 instead of 40.
+
+### I clicked Pre-flight but my site didn't update
+
+Pre-flight only changes frontmatter in your vault. You still need to sync your vault to Git (using Obsidian Git or another tool) for your Astro site to rebuild and deploy. See the **Deploying to Your Site** section above.
 
 ---
 
