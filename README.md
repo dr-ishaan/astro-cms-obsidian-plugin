@@ -55,7 +55,7 @@ Here's what you get:
 
 ### After Installation
 
-1. Look at the left sidebar in Obsidian — you'll see a new dashboard icon
+1. Look at the left sidebar in Obsidian — you'll see a new dashboard icon (you can hide it in Settings → Appearance)
 2. Click it to open your Astro CMS dashboard
 3. Or press `Ctrl+P` (or `Cmd+P` on Mac) and search for **"Open isHistory dashboard"**
 
@@ -107,6 +107,7 @@ date: 2026-05-28
 description: "A short one-line description of your post (15 to 160 characters)."
 draft: false
 tags: ["tag1", "tag2", "tag3"]
+aliases: ["A1"]
 image: "/images/your-hero-image.jpg"
 series: "minds-and-machines"
 seriesOrder: "A1"
@@ -175,6 +176,7 @@ Your research note content goes here...
 |---|---|---|
 | `draft` | Is this a work-in-progress? Must be `true` or `false` | `false` |
 | `tags` | A list of topic tags | `["ai-history", "philosophy"]` |
+| `aliases` | A list of alias names for linking (must be a YAML list) | `["A1"]` |
 | `image` | Hero image path (must start with `/`) | `"/images/a1-hero.jpg"` |
 
 ---
@@ -189,11 +191,13 @@ The plugin checks your posts and shows you exactly what's wrong. Here are the mo
 | Missing date | No `date` field | Add `date: 2026-05-28` |
 | Bad date format | Date is not in YYYY-MM-DD format | Use `2026-05-28` not `May 28, 2026` |
 | Tags not a list | `tags` is a string instead of a list | Use `["tag1", "tag2"]` not `"tag1, tag2"` |
+| Aliases not a list | `aliases` is a string instead of a list | Use `["A1"]` not `"A1"` |
 | Has series but no order | `series` is set but `seriesOrder` is missing | Add `seriesOrder: "A1"` |
 | Missing description | No `description` field | Add `description: "Your description here"` |
 | Draft + published conflict | `draft: true` but `status: "published"` | Set `draft: false` or `status: "upcoming"` |
 | Invalid track code | `track` is not one of your defined tracks | Use a track code from Settings |
 | seriesOrder track mismatch | `seriesOrder` starts with a different track letter than `track` | Make them match |
+| Profile missing figures | A Profile-track post has no `figures` field | Add `figures: "Person Name"` |
 
 ---
 
@@ -211,7 +215,7 @@ At the top of the dashboard, you'll see:
 
 ### Search and Filter
 
-- **Search box** — Type to find posts by title, tag, era, or file path
+- **Search box** — Type to find posts by title, tag, era, figures, seriesOrder, or file path
 - **Filter buttons** — Click to show only: All, Archive, track codes, Vault, Drafts, Recent, Errors
 - **Sort dropdown** — Sort by Series Order, Newest, Oldest, Title A-Z, Errors First, Drafts First
 - **Search debounce** — Search waits 200ms before filtering to keep things smooth
@@ -229,17 +233,21 @@ Click the **Bulk pre-flight all drafts** command to mark all drafts as ready for
 
 ### Right-click Context Menus
 
-Right-click on a file in the file explorer or editor to quickly:
+**File explorer** (right-click a file):
 - **Validate with isHistory** — Check the post for errors
 - **Pre-flight with isHistory** — Mark the post as ready for deployment
 - **Open in isHistory Dashboard** — Jump to the dashboard
+
+**Editor** (right-click inside a note):
+- **Validate this post** — Check the post you're editing
+- **Pre-flight this post** — Mark the current draft as ready
 
 ### Status Bar
 
 The status bar at the bottom of Obsidian shows your content health:
 - **"N ready"** (green) — All posts are valid
-- **"N warnings"** (yellow) — Some posts have warnings
 - **"N errors"** (red) — Some posts have errors that need fixing
+- **"N warnings"** (default) — Some posts have warnings
 - Click the status bar to open the dashboard
 
 ---
@@ -265,7 +273,7 @@ You can access these from the command palette (`Ctrl+P` or `Cmd+P`):
 | `Open quick validate` | Opens the sidebar validator |
 | `Validate current post` | Checks the post you're editing for errors |
 | `Pre-flight current draft` | Marks the draft you're editing as ready for deployment |
-| `New [Track] post` | Creates a new post for each track (one command per track) |
+| `New Articles (A-track)` | Creates a new post for a track (one command per track) |
 | `Validate all content` | Validates all content and shows summary |
 | `Bulk pre-flight all drafts` | Marks all draft posts as ready for deployment |
 
@@ -283,6 +291,8 @@ That's the full pipeline: **Write → Pre-flight → Git sync → Auto-deploy**
 
 You can also use any other Git sync method you prefer — the plugin only manages frontmatter, so any tool that commits and pushes your vault to your Astro repo will work.
 
+> **Tip:** You can also open Obsidian Git directly from the plugin's Settings page — there's a quick-access button at the bottom.
+
 ---
 
 ## Settings
@@ -292,6 +302,7 @@ Go to **Settings → isHistory CMS** to configure:
 ### Content Paths
 - **Archive path** — Path to blog/archive content. Default: `src/content/blog`
 - **Vault path** — Path to vault/research content. Default: `src/content/vault`
+- Each path has a reset button to restore the default
 
 ### Tracks
 - Add, edit, or remove tracks with custom codes, names, emojis, and colors
@@ -306,7 +317,7 @@ Go to **Settings → isHistory CMS** to configure:
 ### Validation Rules
 - **Min/Max title length** — Configurable thresholds for SEO compliance
 - **Min/Max description length** — Meta description validation
-- **Image path prefix** — Require hero images to start with `/` or another prefix
+- **Image path must start with** — Require hero images to start with `/` or another prefix
 - **Required archive fields** — Add or remove fields that every archive post must have
 - **Cross-field validation** — Warns when settings conflict (e.g., min > max, same paths)
 
@@ -314,11 +325,12 @@ Go to **Settings → isHistory CMS** to configure:
 - **Cards per page** — How many cards before "Load More"
 - **Description preview length** — Characters shown before truncation
 - **Figures preview length** — Characters shown for figures field
-- **Tags per card** — Maximum tags displayed
-- **Errors per card** — Maximum errors displayed
+- **Tags shown per card** — Maximum tags displayed
+- **Errors shown per card** — Maximum errors displayed
 - **Tags in meta section** — Maximum unique tags in the dashboard footer
 
 ### New Post Template
+- **Default series** — Series name applied to all new posts (e.g. `minds-and-machines`)
 - **Template variables** — Use `{{seriesOrder}}`, `{{trackName}}`, `{{date}}`, etc.
 - **Slug format** — File name pattern for new posts
 - **Title format** — Default title for new posts
@@ -329,7 +341,14 @@ Go to **Settings → isHistory CMS** to configure:
 ### Pre-flight Settings
 - **Set draft flag to** — What `draft` becomes when pre-flighting
 - **Set status to** — What `status` becomes when pre-flighting
-- **Auto-set date** — Automatically fill in today's date if missing
+- **Auto-fill today's date** — Automatically fill in today's date if missing
+- Reset all pre-flight settings to defaults with one click
+
+### Appearance
+- **Show ribbon icon** — Toggle the isHistory dashboard icon in the left sidebar ribbon
+
+### Deploying to Your Site (in Settings)
+- Quick-access button to open the **Obsidian Git** plugin settings (or its GitHub page if not installed)
 
 ### Settings Validation
 The settings page shows warnings when:
@@ -341,7 +360,7 @@ The settings page shows warnings when:
 
 ## Version History
 
-### v1.6.0 — Trust & Workflow 🛡️
+### v1.6.0 — Trust & Workflow
 - **Pre-flight Validation Gate** — Warns about errors before publishing
 - **Track Deletion Warning** — Shows how many posts use a track before deleting
 - **Failed Save Notice** — Alerts when settings can't be saved
@@ -353,35 +372,36 @@ The settings page shows warnings when:
 - **Right-click Context Menus** — Quick actions on files
 - **Search Debounce (200ms)** — Smooth search performance
 
-### v1.5.0 — Settings That Make Sense ✨
+### v1.5.0 — Settings That Make Sense
 - Full settings UX overhaul (no more sliders)
 - Dynamic track system with custom codes, emojis, and colors
 - Template engine with variable substitution
 - Chip editors for statuses and required fields
 - Color pickers and reset buttons
 
-### v1.4.0 — Your Tracks, Your Way 🎨
+### v1.4.0 — Your Tracks, Your Way
 - Dynamic track system — create any track type
 - Color-coded tracks in dashboard and stats
 - Regex-based scanning derived from track codes
 
-### v1.3.0 — The Big Picture 🖼️
+### v1.3.0 — The Big Picture
 - Dashboard view for browsing all posts
 - Search, filter, and stats bar
 - Pagination with "Load More"
 
-### v1.2.0 — Side by Side 📖
+### v1.2.0 — Side by Side
 - Sidebar view for real-time validation
 - Auto-updates when switching files
 
-### v1.1.0 — Bug Squashing 🐛
+### v1.1.0 — Bug Squashing
 - Fixed plugin freeze on file open
 - Fixed sidebar not updating
 - Fixed floating promise errors
 
-### v1.0.0 — The Beginning 🐣
-- Initial release with isHistory toggle
-- Basic frontmatter management and validation
+### v1.0.0 — The Beginning
+- Initial release with frontmatter validation
+- Basic pre-flight and status management
+- Dashboard view and status bar
 
 ---
 
@@ -433,10 +453,42 @@ But it works with any Astro project that uses content collections!
 
 ## Security
 
-- Release assets are built via GitHub Actions with **artifact attestations** for cryptographic provenance verification
-- No `innerHTML` usage — all DOM manipulation uses Obsidian's `createEl` API
+- Release assets are built via GitHub Actions with **artifact attestations** for `main.js` and `styles.css` (cryptographic provenance verification)
+- No `innerHTML` usage — DOM manipulation uses Obsidian's `createEl` API (with two minimal `document.createElement` calls for style injection and card rendering)
 - No `!important` in CSS — proper selector specificity is used instead
 - No `builtin-modules` npm dependency — uses Node.js built-in `module.builtinModules`
+- Vault scanning uses `app.vault.getMarkdownFiles()` — the recommended Obsidian API that only accesses markdown files, not all vault files
+
+---
+
+## Requirements
+
+- Obsidian v1.0.0 or later
+- An Astro project with Content Collections
+
+---
+
+## Development
+
+```bash
+# Install dependencies
+npm ci
+
+# Build for production
+npm run build
+
+# Development mode (watch)
+npm run dev
+
+# Run tests
+npm test
+
+# Type check
+npm run typecheck
+
+# Lint
+npm run lint
+```
 
 ---
 
