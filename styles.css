@@ -222,7 +222,7 @@
 
 /* ─── Number Input with Unit Label ─── */
 .cms-number-input {
-    width: 80px !important; text-align: center; font-size: 0.9em;
+    width: 80px; text-align: center; font-size: 0.9em;
     font-family: var(--font-monospace);
     padding: 6px 8px; border-radius: 6px;
     border: 1px solid var(--background-modifier-border);
@@ -320,8 +320,8 @@
 
 /* ─── Template Textarea ─── */
 .cms-template-textarea {
-    font-family: var(--font-monospace) !important;
-    font-size: 0.85em !important;
+    font-family: var(--font-monospace);
+    font-size: 0.85em;
     min-height: 80px;
 }
 
