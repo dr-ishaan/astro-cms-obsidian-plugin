@@ -527,11 +527,16 @@ export class IsHistoryDashboardView extends ItemView {
 
   private async _newPost(): Promise<void> {
     try {
+      const trackEntries = Object.entries(this.plugin.settings.tracks);
+      if (trackEntries.length === 0) {
+        new Notice("No tracks defined. Add a track in Settings first.");
+        return;
+      }
       const trackModal = new Modal(this.app);
       trackModal.titleEl.setText("New Post — Select Track");
       const body = trackModal.contentEl.createEl("div", { cls: "cms-new-post-tracks" });
 
-      for (const [code, info] of Object.entries(this.plugin.settings.tracks)) {
+      for (const [code, info] of trackEntries) {
         const btn = body.createEl("button", {
           text: `${info.emoji} ${info.name} (${code})`,
           cls: "cms-btn cms-btn-track-btn",

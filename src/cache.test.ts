@@ -140,7 +140,7 @@ describe("ContentCache.getSortedItems", () => {
     cache.items.set("c", makeItem({ path: "c", seriesOrder: "E2", track: "E" }));
     cache.items.set("d", makeItem({ path: "d", seriesOrder: "A5", track: "A" }));
 
-    const sorted = cache.getSortedItems();
+    const sorted = cache.getSortedItems(undefined, defaultSettings.tracks);
     const orders = sorted.map((i) => i.seriesOrder);
     expect(orders).toEqual(["A1", "A5", "E2", "P3"]);
   });
@@ -150,7 +150,7 @@ describe("ContentCache.getSortedItems", () => {
     cache.items.set("b", makeItem({ path: "b", seriesOrder: "A2", track: "A" }));
     cache.items.set("c", makeItem({ path: "c", seriesOrder: "A1", track: "A" }));
 
-    const sorted = cache.getSortedItems();
+    const sorted = cache.getSortedItems(undefined, defaultSettings.tracks);
     const orders = sorted.map((i) => i.seriesOrder);
     expect(orders).toEqual(["A1", "A2", "A10"]);
   });

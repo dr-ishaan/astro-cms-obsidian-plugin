@@ -14,6 +14,7 @@ import {
   type IsHistorySettings,
   type TrackCode,
   type ValidationResult,
+  type ValidationConfig,
   type ArchiveFrontmatter,
   type VaultFrontmatter,
   normalizePathSetting,
@@ -34,45 +35,52 @@ export class ContentCache {
   _getCollection(path: string, settings: IsHistorySettings): CollectionType | null {
     const normalizedArchive = normalizePathSetting(settings.archivePath);
     const normalizedVault = normalizePathSetting(settings.vaultPath);
-    if (path.startsWith(normalizedArchive)) return "archive";
-    if (path.startsWith(normalizedVault)) return "vault";
+    // Boundary-aware: must match exact path or path + separator to avoid
+    // "src/content/blog-vault" matching archivePath "src/content/blog"
+    // Also skip empty paths to avoid matching every file in the vault
+    if (normalizedArchive && (path === normalizedArchive || path.startsWith(normalizedArchive + "/"))) return "archive";
+    if (normalizedVault && (path === normalizedVault || path.startsWith(normalizedVault + "/"))) return "vault";
     return null;
   }
 
   // ─── Build Item from File ───
 
-  _buildItem(file: TFile, app: App, settings: IsHistorySettings): ContentItem | null {
+  _buildItem(file: TFile, app: App, settings: IsHistorySettings, config?: ValidationConfig, seriesRegex?: RegExp): ContentItem | null {
     try {
       const collection = this._getCollection(file.path, settings);
       if (!collection) return null;
 
       const cache = app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter || {};
-      const config = getValidationConfig(settings);
+      const valConfig = config || getValidationConfig(settings);
 
       // Validate using the correct schema
       let validation: ValidationResult;
       if (collection === "archive") {
-        validation = getStatus(validateArchive(fm as ArchiveFrontmatter | null, config));
+        validation = getStatus(validateArchive(fm as ArchiveFrontmatter | null, valConfig));
       } else {
-        validation = getStatus(validateVault(fm as VaultFrontmatter | null, config));
+        validation = getStatus(validateVault(fm as VaultFrontmatter | null, valConfig));
       }
 
       // Derive track from seriesOrder if track field missing (dynamic regex)
       let track: TrackCode | null = fm.track || null;
-      const seriesRegex = buildSeriesOrderRegex(settings.tracks);
+      const sRegex = seriesRegex || buildSeriesOrderRegex(settings.tracks);
       if (!track && fm.seriesOrder && typeof fm.seriesOrder === "string") {
-        const m = fm.seriesOrder.match(seriesRegex);
+        const m = fm.seriesOrder.match(sRegex);
         if (m) track = m[1] as TrackCode;
       }
 
-      // Normalize tags: YAML shorthand (bare string) → single-element array
+      // Normalize tags and aliases: YAML shorthand (bare string) → single-element array
       const tags = Array.isArray(fm.tags)
         ? fm.tags as string[]
         : typeof fm.tags === "string"
           ? [fm.tags]
           : [];
-      const aliases = Array.isArray(fm.aliases) ? fm.aliases as string[] : [];
+      const aliases = Array.isArray(fm.aliases)
+        ? fm.aliases as string[]
+        : typeof fm.aliases === "string"
+          ? [fm.aliases]
+          : [];
 
       return {
         file,
@@ -108,12 +116,12 @@ export class ContentCache {
   scanAll(app: App, settings: IsHistorySettings): void {
     try {
       const files = app.vault.getMarkdownFiles();
-      const contentFiles = files.filter(
-        (f) =>
-          f.path.startsWith(normalizePathSetting(settings.archivePath)) ||
-          f.path.startsWith(normalizePathSetting(settings.vaultPath))
-      );
+      const contentFiles = files.filter((f) => this.isInCollection(f.path, settings));
       const currentPaths = new Set(contentFiles.map((f) => f.path));
+
+      // Build config and regex once for all files (performance: avoids O(n) repeated construction)
+      const config = getValidationConfig(settings);
+      const seriesRegex = buildSeriesOrderRegex(settings.tracks);
 
       // Remove stale entries
       for (const path of [...this.items.keys()]) {
@@ -125,7 +133,7 @@ export class ContentCache {
 
       // Rebuild items, only mark dirty if content actually changed
       for (const file of contentFiles) {
-        const item = this._buildItem(file, app, settings);
+        const item = this._buildItem(file, app, settings, config, seriesRegex);
         if (item) {
           const existing = this.items.get(file.path);
           if (!existing || this._itemFingerprint(existing) !== this._itemFingerprint(item)) {
@@ -164,9 +172,10 @@ export class ContentCache {
   isInCollection(path: string, settings: IsHistorySettings): boolean {
     const normalizedArchive = normalizePathSetting(settings.archivePath);
     const normalizedVault = normalizePathSetting(settings.vaultPath);
+    // Boundary-aware and skip empty paths
     return (
-      path.startsWith(normalizedArchive) ||
-      path.startsWith(normalizedVault)
+      (!!normalizedArchive && (path === normalizedArchive || path.startsWith(normalizedArchive + "/"))) ||
+      (!!normalizedVault && (path === normalizedVault || path.startsWith(normalizedVault + "/")))
     );
   }
 
@@ -240,8 +249,18 @@ export class ContentCache {
     const filtered = collection
       ? items.filter((i) => i.collection === collection)
       : items;
-    const trackKeys = tracks ? Object.keys(tracks) : ["A", "P", "E"];
+    const trackKeys = tracks ? Object.keys(tracks) : [];
     const mode = sortMode || "seriesOrder";
+
+    // Build regex once before sort comparator (perf: avoids O(n log n) regex construction)
+    const orderRegex = trackKeys.length > 0
+      ? new RegExp(`^([${trackKeys.join("").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}])(\\d+)$`)
+      : null;
+    const parseOrder = (s: string) => {
+      if (!orderRegex) return null;
+      const m = s.match(orderRegex);
+      return m ? { track: m[1], num: parseInt(m[2], 10) } : null;
+    };
 
     return filtered.sort((a, b) => {
       // Sort by chosen mode
@@ -274,11 +293,6 @@ export class ContentCache {
           const bo = b.seriesOrder || "";
 
           if (ao && bo) {
-            const codes = trackKeys.join("");
-            const parseOrder = (s: string) => {
-              const m = s.match(new RegExp(`^([${codes}])(\\d+)$`));
-              return m ? { track: m[1], num: parseInt(m[2], 10) } : null;
-            };
             const pa = parseOrder(ao);
             const pb = parseOrder(bo);
             if (pa && pb) {

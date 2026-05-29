@@ -259,13 +259,16 @@ export interface VaultFrontmatter {
 
 /** Build seriesOrder regex from current track codes, e.g. /^([APE])(\d+)$/ */
 export function buildSeriesOrderRegex(tracks: Record<string, TrackInfo>): RegExp {
-  const codes = Object.keys(tracks).join("");
+  // Escape special regex chars to prevent injection from corrupted track codes
+  const codes = Object.keys(tracks).map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("");
+  if (!codes) return /^__NO_TRACKS__$/; // safe no-match regex when no tracks defined
   return new RegExp(`^([${codes}])(\\d+)$`);
 }
 
 /** Build connects reference regex from current track codes, e.g. /^[APE]\d+$/ */
 export function buildConnectsRefRegex(tracks: Record<string, TrackInfo>): RegExp {
-  const codes = Object.keys(tracks).join("");
+  const codes = Object.keys(tracks).map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("");
+  if (!codes) return /^__NO_TRACKS__$/;
   return new RegExp(`^[${codes}]\\d+$`);
 }
 
@@ -288,14 +291,19 @@ export const TEMPLATE_VARIABLES: { name: string; description: string }[] = [
 
 // ─── Utility ───
 
-/** Normalize a path setting: trim whitespace and remove trailing slashes. */
+/** Normalize a path setting: trim whitespace and remove leading/trailing slashes. */
 export function normalizePathSetting(path: string): string {
-  return path.trim().replace(/\/+$/, "");
+  return path.trim().replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
 /** Convert hex color to rgba string (safe — falls back to purple on invalid hex) */
 export function hexToRgba(hex: string, alpha: number): string {
-  if (!hex || hex.length < 7 || hex[0] !== "#") return `rgba(124, 58, 237, ${alpha})`;
+  if (!hex || hex[0] !== "#") return `rgba(124, 58, 237, ${alpha})`;
+  // Expand 3-digit hex shorthand: #abc → #aabbcc
+  if (hex.length === 4 && /^#[0-9a-fA-F]{3}$/.test(hex)) {
+    hex = `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`;
+  }
+  if (hex.length < 7) return `rgba(124, 58, 237, ${alpha})`;
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);

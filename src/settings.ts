@@ -789,8 +789,9 @@ export class IsHistorySettingTab extends PluginSettingTab {
                                 // Set cursor position after insertion
                                 const newPos = start + insertion.length;
                                 input.setSelectionRange(newPos, newPos);
-                                // Trigger the onChange
+                                // Trigger the onChange (dispatch both events for compatibility)
                                 input.dispatchEvent(new Event("input", { bubbles: true }));
+                                input.dispatchEvent(new Event("change", { bubbles: true }));
                         });
                 }
         }

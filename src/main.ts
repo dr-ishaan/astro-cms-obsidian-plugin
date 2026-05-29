@@ -19,6 +19,7 @@ import {
   getValidationConfig,
   hexToRgba,
   deepMerge,
+  buildSeriesOrderRegex,
 } from "./types";
 import { ContentCache } from "./cache";
 import { validateArchive, validateVault, getStatus } from "./validator";
@@ -127,7 +128,8 @@ export default class IsHistoryPlugin extends Plugin {
     this._statusBarItem.classList.add("ishistory-statusbar");
     this._statusBarItem.createEl("span", { cls: "ishistory-statusbar-icon", text: "isH" });
     this._statusBarItem.createEl("span", { cls: "ishistory-statusbar-text", text: " Loading..." });
-    this._statusBarItem.addEventListener("click", () => { void this.activateDashboard(); });
+    // Use registerDomEvent for proper cleanup on plugin unload
+    this.registerDomEvent(this._statusBarItem, "click", () => { void this.activateDashboard(); });
     this._updateStatusBar();
   }
 
@@ -212,13 +214,27 @@ export default class IsHistoryPlugin extends Plugin {
 
   // ─── Dynamic Track Commands ───
 
+  private _trackCommandIds: string[] = [];
+
   private _registerTrackCommands(): void {
+    // Remove old track commands first to avoid duplicates when tracks change
+    for (const id of this._trackCommandIds) {
+      try {
+        // Obsidian internal: app.commands is not typed but exists at runtime
+        const cmds = (this.app as unknown as { commands?: { removeCommand?: (id: string) => void } }).commands;
+        cmds?.removeCommand?.(`ishistory-cms:${id}`);
+      } catch { /* ignore — command may not exist */ }
+    }
+    this._trackCommandIds = [];
+
     for (const [code, info] of Object.entries(this.settings.tracks)) {
+      const cmdId = `new-${code.toLowerCase()}-track`;
       this.addCommand({
-        id: `new-${code.toLowerCase()}-track`,
+        id: cmdId,
         name: `New ${info.name} (${code}-track)`,
         callback: () => { void this.newPost(code); },
       });
+      this._trackCommandIds.push(cmdId);
     }
   }
 
@@ -338,6 +354,10 @@ export default class IsHistoryPlugin extends Plugin {
       let leaf = workspace.getLeavesOfType(VIEW_TYPE_DASHBOARD)[0];
       if (!leaf) {
         leaf = workspace.getLeaf(false);
+        if (!leaf) {
+          new Notice("Could not open dashboard view.");
+          return;
+        }
         await leaf.setViewState({ type: VIEW_TYPE_DASHBOARD, active: true });
       }
       await workspace.revealLeaf(leaf);
@@ -368,12 +388,11 @@ export default class IsHistoryPlugin extends Plugin {
       const cache = this.app.metadataCache.getFileCache(file);
       const fm = cache?.frontmatter;
       const config = getValidationConfig(this.settings);
-      const isArchive = file.path.startsWith(normalizePathSetting(this.settings.archivePath));
-      const isVault = file.path.startsWith(normalizePathSetting(this.settings.vaultPath));
+      const collection = this.cache._getCollection(file.path, this.settings);
 
-      if (isArchive) {
+      if (collection === "archive") {
         return getStatus(validateArchive(fm, config));
-      } else if (isVault) {
+      } else if (collection === "vault") {
         return getStatus(validateVault(fm, config));
       }
       return { status: "ready", label: "N/A", errors: [] };
@@ -408,13 +427,13 @@ export default class IsHistoryPlugin extends Plugin {
 
   // ─── Feature 1: Pre-flight with validation gate ───
 
-  async preflightFile(file: TFile): Promise<void> {
+  async preflightFile(file: TFile, skipConfirm = false): Promise<void> {
     if (!file) return;
     try {
-      // Validate first — warn if errors exist
+      // Validate first — warn if errors exist (skip modal when called from bulk operations)
       const result = this.validateFile(file);
       const hasErrors = result.errors.some((e) => e.severity === "error");
-      if (hasErrors) {
+      if (hasErrors && !skipConfirm) {
         const errorCount = result.errors.filter((e) => e.severity === "error").length;
         const warningCount = result.errors.filter((e) => e.severity === "warning").length;
         const confirmed = await new Promise<boolean>((resolve) => {
@@ -470,6 +489,11 @@ export default class IsHistoryPlugin extends Plugin {
 
   // ─── New Post (template engine) ───
 
+  /** Escape double quotes for YAML string values */
+  private _yamlSafe(s: string): string {
+    return s.replace(/"/g, '\\"');
+  }
+
   async newPost(track: TrackCode) {
     try {
       const info: TrackInfo | undefined = this.settings.tracks[track];
@@ -480,12 +504,14 @@ export default class IsHistoryPlugin extends Plugin {
 
       const vars: Record<string, string> = {};
 
+      // Use dynamic regex from track codes (supports multi-character codes)
+      const seriesRegex = buildSeriesOrderRegex(this.settings.tracks);
       const existingOrders = this.cache
         .getSortedItems("archive", this.settings.tracks)
         .filter((i) => i.track === track && i.seriesOrder)
         .map((i) => {
-          const m = i.seriesOrder.match(/^[A-Za-z](\d+)$/);
-          return m ? parseInt(m[1], 10) : 0;
+          const m = i.seriesOrder.match(seriesRegex);
+          return m ? parseInt(m[2], 10) : 0;
         });
       const nextNum = existingOrders.length > 0 ? Math.max(...existingOrders) + 1 : 1;
       const seriesOrder = `${track}${nextNum}`;
@@ -519,21 +545,21 @@ export default class IsHistoryPlugin extends Plugin {
       const series = this.settings.defaultSeries || "";
 
       const content = `---
-title: "${title}"
+title: "${this._yamlSafe(title)}"
 date: ${vars.date}
 description: ""
 draft: true
 tags: []
-image: "${image}"
-series: "${series}"
-seriesOrder: "${vars.seriesOrder}"
-track: "${track}"
-status: "${status}"
+image: "${this._yamlSafe(image)}"
+series: "${this._yamlSafe(series)}"
+seriesOrder: "${this._yamlSafe(vars.seriesOrder)}"
+track: "${this._yamlSafe(track)}"
+status: "${this._yamlSafe(status)}"
 part: ""
 figures: ""
 connects: ""
 era: ""
-aliases: ["${vars.seriesOrder}"]
+aliases: ["${this._yamlSafe(vars.seriesOrder)}"]
 ---
 
 ${body}`;
@@ -600,7 +626,7 @@ ${body}`;
       let published = 0;
       for (const item of drafts) {
         try {
-          await this.preflightFile(item.file);
+          await this.preflightFile(item.file, true); // skipConfirm — already confirmed above
           published++;
         } catch (e) {
           console.error(`Failed to pre-flight ${item.path}:`, e);
